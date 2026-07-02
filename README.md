@@ -28,13 +28,9 @@ hardware, no Azure Arc.
 
 ## Architecture
 
-```
-Azure SQL ─ Auditing ─▶ SQLSecurityAuditEvents ─┐
-SQL VM ─ SQL Audit ─ App Log ─ AMA ─ DCR ─▶ Event├─▶ UnifiedSqlAudit ─▶ L1/L2/L3 + Workbook + Alerts
-Preloaded 90-day history ─▶ SqlAuditPoC_CL ──────┘                       └─▶ Sentinel/UEBA (optional)
-```
+![AI-Augmented SQL Audit & User Behavior Anomaly Detection — architecture](architecture.svg)
 
-Full details: [docs/architecture.md](docs/architecture.md). Diagram: `architecture.drawio`.
+Full details: [docs/architecture.md](docs/architecture.md). Editable diagram: [architecture.drawio](architecture.drawio).
 
 ## Repository layout
 
