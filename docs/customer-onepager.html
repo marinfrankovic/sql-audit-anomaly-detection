@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Contoso Bank — AI-Augmented SQL Audit: What we showed you</title>
+<style>
+  :root{
+    --blue:#0067b8; --dark:#243a5e; --ink:#20242b; --muted:#5a5a5a;
+    --l1:#107c10; --l2:#8661c5; --l3:#ca5010; --bg:#f2f6fc; --line:#dbe2ec;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  body{font-family:"Segoe UI",Arial,sans-serif; color:var(--ink); font-size:10.5px; line-height:1.42; margin:0;}
+  .page{padding:26px 34px;}
+  h1{font-size:21px; color:#fff; margin:0;}
+  .head{background:linear-gradient(135deg,var(--dark),var(--blue)); color:#fff; padding:20px 34px;}
+  .head .sub{font-size:11.5px; opacity:.95; margin-top:4px;}
+  h2{font-size:13px; color:var(--dark); margin:16px 0 6px; border-bottom:2px solid var(--blue); padding-bottom:3px;}
+  p{margin:5px 0;}
+  .q{background:var(--bg); border-left:4px solid var(--blue); padding:9px 13px; border-radius:0 6px 6px 0; font-style:italic; margin:10px 0;}
+  .grid{display:flex; gap:10px; margin:8px 0;}
+  .card{flex:1; border:1px solid var(--line); border-radius:8px; padding:10px 11px; background:#fff;}
+  .card h3{margin:0 0 4px; font-size:11.5px;}
+  .tag{display:inline-block; color:#fff; font-weight:700; font-size:9px; padding:2px 7px; border-radius:11px; margin-bottom:5px; letter-spacing:.3px;}
+  .l1{background:var(--l1);} .l2{background:var(--l2);} .l3{background:var(--l3);}
+  .small{font-size:9.3px; color:var(--muted);}
+  ul{margin:4px 0 4px 16px; padding:0;} li{margin:2px 0;}
+  .row{display:flex; gap:14px;}
+  .col{flex:1;}
+  .val{background:#fff; border:1px solid var(--line); border-radius:8px; padding:8px 11px; margin:6px 0;}
+  .val b{color:var(--blue);}
+  .foot{margin-top:14px; padding-top:8px; border-top:1px solid var(--line); font-size:9px; color:var(--muted);}
+  @page{size:A4; margin:0;}
+</style>
+</head>
+<body>
+<div class="head">
+  <h1>Seeing &mdash; and understanding &mdash; who touches your data</h1>
+  <div class="sub">AI-Augmented SQL Audit &amp; Behaviour Analytics &middot; What we showed you today</div>
+</div>
+<div class="page">
+
+  <div class="q">&ldquo;Can we see <b>who</b> accessed <b>which database records</b>, <b>when</b> and <b>from where</b> &mdash; and know whether the behaviour was <b>normal or abnormal</b>, even when the person has legitimate elevated access?&rdquo; &mdash; Yes.</div>
+
+  <p>Every access to your banking databases (both cloud and server-based) is recorded in one central place. On top of that log we run <b>three layers of detection</b> that work together &mdash; and an AI that explains what it found in plain language. It all runs inside your Azure tenant, on synthetic data, ready to show on day one.</p>
+
+  <h2>Three layers of detection &mdash; because rules alone aren&rsquo;t enough</h2>
+  <div class="grid">
+    <div class="card">
+      <span class="tag l1">LAYER 1 &middot; RULES</span>
+      <h3>Known-bad patterns</h3>
+      <p>Fixed, explainable rules: a break-glass account being used, a DELETE on a money-transfer table, changes to permissions, sensitive data read after hours.</p>
+      <p class="small">Reliable and auditable. Catches what we already know is dangerous.</p>
+    </div>
+    <div class="card">
+      <span class="tag l2">LAYER 2 &middot; MACHINE LEARNING</span>
+      <h3>Never-seen-before behaviour</h3>
+      <p>The system <b>learns each user&rsquo;s normal pattern</b> over 90 days and flags statistical outliers &mdash; like a sudden burst of activity &mdash; <b>without any rule being written</b>.</p>
+      <p class="small">Even a trusted DBA is measured against their own normal.</p>
+    </div>
+    <div class="card">
+      <span class="tag l3">LAYER 3 &middot; AI</span>
+      <h3>Explains the &ldquo;why&rdquo;</h3>
+      <p>AI reads the evidence and explains, in plain language, <b>why</b> something is suspicious and <b>what to check first</b> &mdash; grounded strictly in the audit records, never invented.</p>
+      <p class="small">Turns raw signals into an analyst-ready story in seconds.</p>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col">
+      <h2>What you saw</h2>
+      <ul>
+        <li><b>A single dashboard</b> with 90 days of history, already populated.</li>
+        <li><b>Executive KPIs</b>: total access events, behaviour anomalies, high-risk anomalies, break-glass use.</li>
+        <li>All <b>three detection layers</b> side by side, each clearly labelled.</li>
+        <li>An <b>Investigation view</b> that ranks activity by risk score, with full evidence (user, time, object, statement, source IP).</li>
+        <li><b>Email alerts</b> for high-risk events, visible in Azure Monitor &rarr; Alerts.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h2>Why it matters</h2>
+      <div class="val"><b>Insider &amp; privileged-user risk:</b> spot misuse even by people who are <i>allowed</i> to access the data.</div>
+      <div class="val"><b>Faster investigations:</b> AI explanations cut triage from hours to minutes.</div>
+      <div class="val"><b>Compliance evidence:</b> a complete, queryable record of access to sensitive financial data.</div>
+    </div>
+  </div>
+
+  <h2>How it works (in one line)</h2>
+  <p>Databases &rarr; every access is logged to <b>Azure Log Analytics</b> &rarr; <b>Rules + Machine Learning + AI</b> analyse it &rarr; results shown on a <b>dashboard</b> and pushed as <b>email alerts</b>. Runs entirely in Azure; no agents on your databases; all data synthetic.</p>
+
+  <div class="foot">
+    Proof of Concept &middot; Microsoft &amp; Contoso Bank &middot; All data is synthetic &mdash; no real personal information is used. &nbsp;|&nbsp; Deployed with a single command; can be removed just as easily.
+  </div>
+</div>
+</body>
+</html>

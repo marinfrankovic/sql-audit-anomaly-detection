@@ -1,0 +1,151 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Contoso Bank SQL Audit & AI Behavior Analytics PoC\n\nThree-layer database behaviour analytics over **Azure SQL** and **SQL Server on Azure VM**, with **90 days of history preloaded** (`SqlAuditPoC_CL`) so every panel is populated immediately.\n\n> _\"Who accessed which database records, when, from where — and was the behaviour normal or abnormal, even for privileged users?\"_"
+      },
+      "name": "title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          { "id": "p-time", "version": "KqlParameterItem/1.0", "name": "TimeRange", "label": "Time range", "type": 4, "isRequired": true, "value": { "durationMs": 2592000000 }, "typeSettings": { "selectableValues": [ { "durationMs": 3600000 }, { "durationMs": 14400000 }, { "durationMs": 86400000 }, { "durationMs": 604800000 }, { "durationMs": 2592000000 }, { "durationMs": 7776000000 } ] } },
+          { "id": "p-user", "version": "KqlParameterItem/1.0", "name": "UserName", "label": "User", "type": 2, "multiSelect": true, "quote": "'", "delimiter": ",", "typeSettings": { "additionalResourceOptions": ["value::all"] }, "query": "SqlAuditPoC_CL | where isnotempty(UserName_s) | distinct UserName=UserName_s | order by UserName asc", "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "value": ["value::all"] },
+          { "id": "p-source", "version": "KqlParameterItem/1.0", "name": "SourceType", "label": "Source", "type": 2, "multiSelect": true, "quote": "'", "delimiter": ",", "typeSettings": { "additionalResourceOptions": ["value::all"] }, "jsonData": "[\"History\",\"AzureSQL\",\"SqlServerVM\"]", "value": ["value::all"] },
+          { "id": "p-risk", "version": "KqlParameterItem/1.0", "name": "RiskCategory", "label": "Risk category", "type": 2, "multiSelect": true, "quote": "'", "delimiter": ",", "typeSettings": { "additionalResourceOptions": ["value::all"] }, "jsonData": "[\"SensitiveDataAccess\",\"PermissionChange\",\"BreakGlass\",\"DataModification\",\"BehaviorAnomaly\",\"SegregationOfDuties\",\"Normal\"]", "value": ["value::all"] },
+          { "id": "p-detection", "version": "KqlParameterItem/1.0", "name": "DetectionName", "label": "Detection", "type": 2, "multiSelect": true, "quote": "'", "delimiter": ",", "typeSettings": { "additionalResourceOptions": ["value::all"] }, "query": "union isfuzzy=true (SqlAuditPoC_CL | project DetectionName=DetectionName_s) | where isnotempty(DetectionName) and DetectionName != 'None' | distinct DetectionName | order by DetectionName asc", "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "value": ["value::all"] },
+          { "id": "p-db", "version": "KqlParameterItem/1.0", "name": "DatabaseName", "label": "Database", "type": 2, "multiSelect": true, "quote": "'", "delimiter": ",", "typeSettings": { "additionalResourceOptions": ["value::all"] }, "query": "SqlAuditPoC_CL | where isnotempty(DatabaseName_s) | distinct DatabaseName=DatabaseName_s | order by DatabaseName asc", "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "value": ["value::all"] },
+          { "id": "p-anom", "version": "KqlParameterItem/1.0", "name": "ShowOnlyAnomalies", "label": "Show only anomalies", "type": 2, "isRequired": true, "typeSettings": {}, "jsonData": "[{\"value\":\"1\",\"label\":\"Yes\"},{\"value\":\"0\",\"label\":\"No\",\"selected\":true}]", "value": "0" },
+          { "id": "p-ai", "version": "KqlParameterItem/1.0", "name": "ShowAIExplanation", "label": "Show AI explanation column", "type": 2, "isRequired": true, "typeSettings": {}, "jsonData": "[{\"value\":\"1\",\"label\":\"Yes\",\"selected\":true},{\"value\":\"0\",\"label\":\"No\"}]", "value": "1" }
+        ],
+        "style": "pills",
+        "queryType": 0
+      },
+      "name": "parameters"
+    },
+    { "type": 1, "content": { "json": "## 1. Executive Overview" }, "name": "h1" },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let A = union isfuzzy=true (SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | extend U=UserName_s, O=ObjectName_s, D=DetectionName_s, P=tobool(IsPrivilegedUser_b)), (SQLSecurityAuditEvents | where TimeGenerated >= {TimeRange:start} | extend U=ServerPrincipalName, O=ObjectName, D='', P=(tolower(ServerPrincipalName) in ('dba_user','privileged_admin','breakglass_admin'))); A | summarize TotalEvents=count(), Anomalies=countif(isnotempty(D) and D != 'None'), HighRisk=countif(D in ('DBA after-hours sensitive access','Break-glass account used','Suspicious DELETE on financial object','Permission escalation')), Privileged=countif(P and isnotempty(D) and D != 'None'), Sensitive=countif(O has 'SensitiveCustomerData'), BreakGlass=countif(tolower(U)=='breakglass_admin') | extend b = bag_pack('1 Audit events', TotalEvents, '2 Behaviour anomalies', Anomalies, '3 High-risk anomalies', HighRisk, '4 Privileged-user anomalies', Privileged, '5 Sensitive-data accesses', Sensitive, '6 Break-glass uses', BreakGlass) | mv-expand b | extend Metric=tostring(bag_keys(b)[0]) | extend Value=tolong(b[Metric]) | project Metric, Value | order by Metric asc",
+        "size": 3, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "tiles",
+        "tileSettings": { "showBorder": true, "titleContent": { "columnMatch": "Metric", "formatter": 1 }, "leftContent": { "columnMatch": "Value", "formatter": 12, "formatOptions": { "palette": "blue" } } }
+      },
+      "name": "exec-tiles"
+    },
+    { "type": 1, "content": { "json": "## 2. Data Access Timeline &amp; Layer 2 \u2014 Machine-Learning Anomaly Baseline\n\n_The right-hand chart uses KQL machine learning (`series_decompose_anomalies`) to learn the normal daily query volume and flag statistical outliers \u2014 no fixed thresholds._" }, "name": "h2" },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | summarize Events=count() by bin(EventTime_t, 1d), SourceType=SourceType_s | render timechart",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "timechart"
+      },
+      "customWidth": "50", "name": "timeline"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SqlAuditPoC_CL | where isnotempty(EventTime_t) and Action_s == 'BATCH COMPLETED' | make-series Queries=count() default=0 on EventTime_t from {TimeRange:start} to endofday(now()) step 1d | extend (anomalies, score, baseline) = series_decompose_anomalies(Queries, 1.5) | render anomalychart with(anomalycolumns=anomalies)",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "linechart"
+      },
+      "customWidth": "50", "name": "volume-baseline"
+    },
+    { "type": 1, "content": { "json": "## 3. User Behavior Analytics" }, "name": "h3" },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let priv = dynamic(['dba_user','privileged_admin','breakglass_admin']); let A = union isfuzzy=true (SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | extend U=UserName_s, O=ObjectName_s), (SQLSecurityAuditEvents | where TimeGenerated >= {TimeRange:start} | extend U=ServerPrincipalName, O=ObjectName); A | where isnotempty(U) | summarize Events=count(), DistinctObjects=dcount(O) by U | extend Class=iff(tolower(U) in (priv),'Privileged','Standard') | top 20 by Events desc",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "table",
+        "gridSettings": { "formatters": [ { "columnMatch": "Events", "formatter": 4, "formatOptions": { "palette": "blue" } }, { "columnMatch": "Class", "formatter": 18, "formatOptions": { "thresholdsOptions": "icons", "thresholdsGrid": [ { "operator": "==", "thresholdValue": "Privileged", "representation": "Sev1", "text": "Privileged" }, { "operator": "Default", "representation": "success", "text": "Standard" } ] } } ] }
+      },
+      "customWidth": "50", "name": "top-users"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let priv = dynamic(['dba_user','privileged_admin','breakglass_admin']); union isfuzzy=true (SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | extend U=UserName_s), (SQLSecurityAuditEvents | where TimeGenerated >= {TimeRange:start} | extend U=ServerPrincipalName) | where isnotempty(U) | summarize Events=count() by Class=iff(tolower(U) in (priv),'Privileged','Standard') | render piechart",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "piechart"
+      },
+      "customWidth": "50", "name": "priv-vs-standard"
+    },
+    { "type": 1, "content": { "json": "## 4. Sensitive Data Access" }, "name": "h4" },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | extend U=UserName_s, O=ObjectName_s, S=Statement_s, DB=DatabaseName_s | where O has 'SensitiveCustomerData' or S has_any ('SensitiveCustomerData','SalaryBand','CreditScore','InternalRiskComment','VIPFlag') | project EventTime=EventTime_t, User=U, DatabaseName=DB, ObjectName=O, Statement=S | order by EventTime desc | take 100",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "table"
+      },
+      "name": "sensitive"
+    },
+    { "type": 1, "content": { "json": "## 5. Layer 3 \u2014 AI-Assisted Findings (Azure OpenAI)" }, "name": "h5" },
+    {
+      "type": 1,
+      "content": {
+        "json": "> **Layer 3 \u2014 AI Analyst.** Azure OpenAI reads the flagged audit evidence (read-only) and explains **why** each behaviour is suspicious and what to do next \u2014 grounded strictly in the records, never invented. Example findings from the current data:\n\n**\ud83d\udd34 DBA after-hours sensitive access \u2014 `dba_user`**  \n_Finding:_ `dba_user` read VIP salary / credit / risk fields in `auditdemo.SensitiveCustomerData` at ~22:00 UTC, outside the expected 08\u201318 window. Privileged access is allowed, but the timing and VIP-data target make this unusual for this user.  \n_Evidence:_ after-hours; `auditdemo.SensitiveCustomerData`; SalaryBand / CreditScore / InternalRiskComment; RiskCategory=SensitiveDataAccess.  \n_Recommended action:_ confirm an approved maintenance window; compare to peer DBAs; check whether VIP fields were required.\n\n**\ud83d\udd34 Break-glass account used \u2014 `breakglass_admin`**  \n_Finding:_ `breakglass_admin` was used to read `admin.AccessRequests`. Break-glass accounts should only be used during an approved incident.  \n_Evidence:_ `admin.AccessRequests`; RiskCategory=BreakGlass.  \n_Recommended action:_ verify an approved incident record exists; rotate break-glass credentials after use.\n\n**\ud83d\udd34 Suspicious DELETE on financial object \u2014 `suspicious_user`**  \n_Finding:_ `suspicious_user` issued a `DELETE` against `payments.WireTransfers`. Destructive statements against money-movement data are high risk.  \n_Evidence:_ Statement includes DELETE; `payments.WireTransfers`; RiskCategory=DataModification.  \n_Recommended action:_ confirm change ticket; validate the targeted rows; review the account entitlements.\n\n_These narratives are AI-generated and preloaded, so the panel is demo-ready with no script to run. To regenerate live against the newest anomalies, run `./scripts/run-ai-analysis.ps1`._"
+      },
+      "name": "ai-note"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | where isnotempty(DetectionName_s) and DetectionName_s != 'None' | project EventTime=EventTime_t, UserName=UserName_s, ObjectName=ObjectName_s, DetectionName=DetectionName_s, RiskCategory=RiskCategory_s, AnomalyScore=toint(AnomalyScore_d), ['AI signals']=BehaviorExplanation_s | order by AnomalyScore desc | take 25",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "table",
+        "gridSettings": { "formatters": [ { "columnMatch": "AnomalyScore", "formatter": 8, "formatOptions": { "palette": "redGreen", "min": 0, "max": 120 } } ] }
+      },
+      "name": "ai-evidence"
+    },
+    { "type": 1, "content": { "json": "## 6. Layer 1 \u2014 Deterministic Rule Detections\n\n_Fixed, explainable KQL rules (e.g. break-glass used, after-hours sensitive access, DELETE on financial objects). Each tile is a rule that either fires or doesn't._" }, "name": "h6" },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let A = union isfuzzy=true (SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | extend D=DetectionName_s), (SQLSecurityAuditEvents | where TimeGenerated >= {TimeRange:start} | extend D=''); let t = (name:string) { A | where D == name | summarize C=count() | extend Detection=name }; union (t('DBA after-hours sensitive access')), (t('Break-glass account used')), (t('Suspicious DELETE on financial object')), (t('Permission escalation')), (t('Query volume anomaly')), (t('Out-of-role data access')) | project Detection, C | order by C desc",
+        "size": 3, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "tiles",
+        "tileSettings": { "titleContent": { "columnMatch": "Detection", "formatter": 1 }, "leftContent": { "columnMatch": "C", "formatter": 12, "formatOptions": { "palette": "red" } }, "showBorder": true }
+      },
+      "name": "wow"
+    },
+    { "type": 1, "content": { "json": "## 7. Investigation View" }, "name": "h7" },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SqlAuditPoC_CL | where isnotempty(EventTime_t) | where EventTime_t >= {TimeRange:start} | extend EventTime=EventTime_t, SourceType=SourceType_s, UserName=UserName_s, DatabaseName=DatabaseName_s, ObjectName=ObjectName_s, Action=Action_s, DetectionName=DetectionName_s, RiskCategory=RiskCategory_s, AnomalyScore=toint(AnomalyScore_d), BehaviorExplanation=BehaviorExplanation_s, Statement=Statement_s, ClientIp=ClientIp_s | extend IsAnomaly=(isnotempty(DetectionName) and DetectionName != 'None') | where UserName in ({UserName}) | where SourceType in ({SourceType}) | where RiskCategory in ({RiskCategory}) | where DatabaseName in ({DatabaseName}) | where DetectionName in ({DetectionName}) | where '{ShowOnlyAnomalies}' == '0' or IsAnomaly | project EventTime, SourceType, UserName, DatabaseName, ObjectName, Action, DetectionName, RiskCategory, AnomalyScore, BehaviorExplanation, Statement | order by AnomalyScore desc, EventTime desc | take 500",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "table",
+        "gridSettings": { "formatters": [ { "columnMatch": "AnomalyScore", "formatter": 8, "formatOptions": { "palette": "redGreen", "min": 0, "max": 120 } }, { "columnMatch": "RiskCategory", "formatter": 18, "formatOptions": { "thresholdsOptions": "colors", "thresholdsGrid": [ { "operator": "==", "thresholdValue": "SensitiveDataAccess", "representation": "redBright", "text": "{0}{1}" }, { "operator": "==", "thresholdValue": "BreakGlass", "representation": "red", "text": "{0}{1}" }, { "operator": "==", "thresholdValue": "PermissionChange", "representation": "orange", "text": "{0}{1}" }, { "operator": "Default", "representation": "gray", "text": "{0}{1}" } ] } } ] }
+      },
+      "name": "investigation"
+    },
+    { "type": 1, "content": { "json": "## 8. Sentinel / UEBA Context" }, "name": "h8" },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true (BehaviorAnalytics | where TimeGenerated > ago(7d) | summarize InvestigationPriority=max(InvestigationPriority), Activities=count() by User=UserPrincipalName | order by InvestigationPriority desc | take 50), (datatable(User:string, Info:string)['(no UEBA data)','UEBA context is optional — it requires Microsoft Sentinel UEBA (BehaviorAnalytics table), which is not populated in this workspace.'])",
+        "size": 0, "queryType": 0, "resourceType": "microsoft.operationalinsights/workspaces", "visualization": "table"
+      },
+      "name": "ueba"
+    },
+    { "type": 1, "content": { "json": "## 9. Demo Runbook" }, "name": "h9" },
+    {
+      "type": 1,
+      "content": {
+        "json": "**Three detection layers in this PoC:**  **Layer 1 \u2014 Deterministic rules** (section 6): fixed, explainable KQL rules.  **Layer 2 \u2014 Machine learning** (section 2, right chart): `series_decompose_anomalies` learns each user/system's normal behaviour and flags statistical outliers \u2014 not a fixed rule.  **Layer 3 \u2014 AI** (section 5): Azure OpenAI explains *why* the flagged behaviour is suspicious, grounded strictly in the audit evidence.\n\n**Deploy:** `azd up` (preloads 90-day history)  &middot;  **Live VM scenarios:** `./scripts/run-poc-scenarios.ps1 -Setup` then `./scripts/generate-wow-detections.ps1`  &middot;  **AI:** `./scripts/run-ai-analysis.ps1`\n\n**Demo order:** Executive Overview &rarr; Timeline &amp; ML baseline &rarr; Layer 1 rule detections &rarr; Investigation View (sort by AnomalyScore) &rarr; Layer 3 AI findings. Set the **Time range** to 30 days."
+      },
+      "name": "runbook"
+    }
+  ],
+  "fallbackResourceIds": [],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

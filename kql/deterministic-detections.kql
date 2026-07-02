@@ -1,0 +1,65 @@
+// =============================================================================
+//  deterministic-detections.kql — LAYER 1 (deterministic controls).
+//  Explainable, rule-based detections over the audit stream. These are the
+//  foundation: they run directly on SQLSecurityAuditEvents (works immediately)
+//  and back the deployed Azure Monitor alerts. Swap to UnifiedSqlAudit to
+//  include the SQL Server VM.
+//  Output contract: EventTime, UserName, DatabaseName, ObjectName, Statement,
+//                   DetectionName, RiskCategory, AnomalyScore, Reason, RecommendedAction
+// =============================================================================
+
+// D1) High-risk statement (destructive / privilege-changing) -----------------
+SQLSecurityAuditEvents
+| where Statement matches regex @"(?i)\b(DROP|TRUNCATE|ALTER\s+TABLE|GRANT|REVOKE|DENY|ALTER\s+ROLE|ADD\s+MEMBER|ALTER\s+AUTHORIZATION|CREATE\s+USER|DROP\s+USER)\b"
+     or (Statement matches regex @"(?i)\bDELETE\b" and Statement has_any ("Transactions","PaymentInstructions","WireTransfers"))
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="High-risk statement", RiskCategory="HighRiskStatement", AnomalyScore=80,
+          Reason="Destructive or privilege-changing statement executed",
+          RecommendedAction="Confirm change ticket / approval; verify the actor and target object"
+
+// D2) Sensitive table access by non-privileged user --------------------------
+SQLSecurityAuditEvents
+| extend U = tolower(ServerPrincipalName)
+| where (ObjectName has_any ("SensitiveCustomerData","FraudSignals","WireTransfers","CustomerRiskScores","SanctionsScreening")
+        or Statement has_any ("SensitiveCustomerData","FraudSignals","WireTransfers","CustomerRiskScores","SanctionsScreening"))
+| where U in ("normal_user","reporting_user","app_user")
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Normal user accessing sensitive table", RiskCategory="SensitiveDataAccess", AnomalyScore=75,
+          Reason="Non-privileged principal accessed a catalogued sensitive object",
+          RecommendedAction="Validate business need; review the principal's entitlements"
+
+// D3) Failed login burst -----------------------------------------------------
+SQLSecurityAuditEvents
+| where ActionName in ("DATABASE AUTHENTICATION FAILED","LOGIN FAILED")
+| summarize FailedLogins=count(), Statement=make_list(Statement, 3) by UserName=ServerPrincipalName, DatabaseName, bin(TimeGenerated, 5m)
+| where FailedLogins >= 5
+| project EventTime=TimeGenerated, UserName, DatabaseName, ObjectName="", Statement=tostring(Statement),
+          DetectionName="Failed login burst", RiskCategory="Authentication", AnomalyScore=60,
+          Reason=strcat(FailedLogins, " failed authentications in 5 minutes"),
+          RecommendedAction="Check for credential stuffing / misconfigured app; consider lockout"
+
+// D4) Break-glass account used -----------------------------------------------
+SQLSecurityAuditEvents
+| where tolower(ServerPrincipalName) == "breakglass_admin" or Statement has "breakglass_admin"
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Break-glass account used", RiskCategory="BreakGlass", AnomalyScore=100,
+          Reason="Emergency break-glass account was used",
+          RecommendedAction="Confirm an approved incident exists; rotate credentials after use"
+
+// D5) Permission escalation --------------------------------------------------
+SQLSecurityAuditEvents
+| where ActionName has_any ("ADD MEMBER","DATABASE ROLE MEMBER CHANGE","SERVER ROLE MEMBER CHANGE","PERMISSION CHANGE")
+     or Statement matches regex @"(?i)\b(GRANT|ALTER\s+ROLE|ADD\s+MEMBER|sp_addrolemember)\b"
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Permission escalation", RiskCategory="PermissionChange", AnomalyScore=85,
+          Reason="Grant / role-membership / permission change detected",
+          RecommendedAction="Verify approval; confirm grantee should receive the permission"
+
+// D6) Schema tampering -------------------------------------------------------
+SQLSecurityAuditEvents
+| where Statement matches regex @"(?i)\b(ALTER\s+TABLE|DROP\s+TABLE|CREATE\s+USER|DROP\s+USER|ALTER\s+AUTHORIZATION|CREATE\s+LOGIN|DROP\s+LOGIN)\b"
+     or ActionName has "SCHEMA OBJECT CHANGE"
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Schema tampering", RiskCategory="SchemaChange", AnomalyScore=80,
+          Reason="Structural change to database objects or principals",
+          RecommendedAction="Confirm change management record; verify actor authorisation"

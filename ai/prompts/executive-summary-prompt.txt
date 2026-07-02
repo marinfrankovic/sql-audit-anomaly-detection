@@ -1,0 +1,15 @@
+Produce a daily SQL risk executive summary for Contoso Bank security leadership.
+
+Use ONLY the evidence below (top anomalies, privileged activity, sensitive object access).
+Do not invent events. Cite fields where you make a claim.
+
+Evidence (JSON):
+{evidence}
+
+Produce:
+1. Executive summary (3-5 sentences).
+2. Top risky users (with why, citing UserName / DetectionName / ObjectName).
+3. Top risky objects (which sensitive objects were accessed and by whom).
+4. Recommended investigation actions (read-only, prioritised).
+
+Be concise and factual. If evidence is empty, state that no notable risk was observed.

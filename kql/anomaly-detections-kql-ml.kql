@@ -1,0 +1,156 @@
+// =============================================================================
+//  anomaly-detections-kql-ml.kql — LAYER 2 (behavioural anomaly detection).
+//  Uses Log Analytics time-series / baseline logic (make-series,
+//  series_decompose_anomalies, per-user & peer baselines) to reduce the need to
+//  hand-define every static rule. Runs on SQLSecurityAuditEvents (works
+//  immediately); swap to UnifiedSqlAudit to include the SQL Server VM.
+//
+//  Shared output contract for every detection:
+//    EventTime, UserName, DatabaseName, ObjectName, Statement,
+//    DetectionName, RiskCategory, AnomalyScore, Reason, RecommendedAction
+//
+//  Expected working hours / role scope are provided as KQL datatables so the
+//  detections do not depend on reading SQL tables from KQL.
+// =============================================================================
+
+// ----------------------------------------------------------------------------
+// Detection A — User query volume anomaly (time-series baseline per user)
+// ----------------------------------------------------------------------------
+let step = 15m;
+SQLSecurityAuditEvents
+| where ActionName == "BATCH COMPLETED"
+| make-series Queries = count() default=0 on TimeGenerated in range(ago(1d), now(), step) by ServerPrincipalName
+| extend (anomalies, score, baseline) = series_decompose_anomalies(Queries, 1.5, -1, 'linefit')
+| mv-expand TimeGenerated to typeof(datetime), Queries to typeof(long), anomalies to typeof(double), score to typeof(double), baseline to typeof(double)
+| where anomalies > 0 and Queries > 20
+| project EventTime=todatetime(TimeGenerated), UserName=ServerPrincipalName, DatabaseName="", ObjectName="",
+          Statement=strcat("~", tostring(Queries), " queries in window (baseline ", tostring(round(baseline,1)), ")"),
+          DetectionName="Query volume anomaly", RiskCategory="BehaviorAnomaly",
+          AnomalyScore=toint(50 + 10*score), Reason="Query volume deviates from the user's own baseline",
+          RecommendedAction="Review what was queried; check for bulk export / exfiltration";
+
+// ----------------------------------------------------------------------------
+// Detection B — Sensitive object access anomaly (first-time / rare access)
+// ----------------------------------------------------------------------------
+let lookback = 7d;
+let baseline = SQLSecurityAuditEvents
+    | where TimeGenerated between (ago(lookback) .. ago(1d)) and ObjectName has "SensitiveCustomerData"
+    | distinct ServerPrincipalName, ObjectName;
+SQLSecurityAuditEvents
+| where TimeGenerated > ago(1d) and (ObjectName has "SensitiveCustomerData" or Statement has "SensitiveCustomerData")
+| join kind=leftanti baseline on ServerPrincipalName, ObjectName
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Sensitive object access anomaly", RiskCategory="SensitiveDataAccess", AnomalyScore=70,
+          Reason="First-time / rare access to a sensitive object for this user vs baseline",
+          RecommendedAction="Confirm business justification; compare to peers in the same role";
+
+// ----------------------------------------------------------------------------
+// Detection C — After-hours behavioural anomaly (vs expected working hours)
+// ----------------------------------------------------------------------------
+let hours = datatable(UserName:string, StartH:int, EndH:int)
+[ "normal_user",8,17, "app_user",0,23, "reporting_user",8,18, "payments_analyst",8,18,
+  "fraud_analyst",8,18, "dba_user",8,18, "privileged_admin",8,18, "suspicious_user",9,17, "breakglass_admin",0,23 ];
+SQLSecurityAuditEvents
+| extend U = tolower(ServerPrincipalName), H = datetime_part("Hour", TimeGenerated)
+| join kind=inner hours on $left.U == $right.UserName
+| where H < StartH or H >= EndH
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="After-hours behavioural anomaly", RiskCategory="BehaviorAnomaly", AnomalyScore=55,
+          Reason=strcat("Activity at hour ", tostring(H), " UTC is outside expected ", tostring(StartH), "-", tostring(EndH)),
+          RecommendedAction="Validate on-call / batch context; correlate with sensitivity of accessed object";
+
+// ----------------------------------------------------------------------------
+// Detection D — Out-of-role access anomaly (schema vs expected role scope)
+// ----------------------------------------------------------------------------
+let roleScope = datatable(UserName:string, Allowed:string)
+[ "payments_analyst","payments", "fraud_analyst","risk", "reporting_user","core", "normal_user","core", "app_user","payments" ];
+SQLSecurityAuditEvents
+| extend U = tolower(ServerPrincipalName)
+| join kind=inner roleScope on $left.U == $right.UserName
+| where isnotempty(ObjectName)
+| where not(ObjectName has Allowed) and not(Statement has Allowed)
+| where ObjectName has_any ("SensitiveCustomerData","FraudSignals","WireTransfers","SanctionsScreening","CustomerRiskScores","EmployeeAccessProfiles","AccessRequests")
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Out-of-role data access", RiskCategory="SegregationOfDuties", AnomalyScore=70,
+          Reason=strcat("Accessed object outside expected '", Allowed, "' scope for the role"),
+          RecommendedAction="Review segregation-of-duties; confirm the access is authorised";
+
+// ----------------------------------------------------------------------------
+// Detection E — Privileged user unusual object access (vs own baseline)
+// ----------------------------------------------------------------------------
+let priv = dynamic(["dba_user","privileged_admin"]);
+let privBaseline = SQLSecurityAuditEvents
+    | where TimeGenerated between (ago(7d) .. ago(1d)) and tolower(ServerPrincipalName) in (priv)
+    | summarize by ServerPrincipalName, ObjectName;
+SQLSecurityAuditEvents
+| where TimeGenerated > ago(1d) and tolower(ServerPrincipalName) in (priv)
+| where ObjectName has_any ("SensitiveCustomerData","WireTransfers","SanctionsScreening","FraudSignals")
+| join kind=leftanti privBaseline on ServerPrincipalName, ObjectName
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Privileged unusual object access", RiskCategory="SensitiveDataAccess", AnomalyScore=75,
+          Reason="Privileged user accessed a business-sensitive object they do not normally touch",
+          RecommendedAction="Privileged access is allowed but unusual here — confirm the task";
+
+// ----------------------------------------------------------------------------
+// Detection F — High-velocity object enumeration (many distinct tables fast)
+// ----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where isnotempty(ObjectName)
+| summarize DistinctObjects = dcount(ObjectName), Objects = make_set(ObjectName, 15)
+    by ServerPrincipalName, bin(TimeGenerated, 5m)
+| where DistinctObjects >= 8
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName="", ObjectName=tostring(Objects),
+          Statement="", DetectionName="High velocity object enumeration", RiskCategory="BehaviorAnomaly",
+          AnomalyScore=toint(50 + DistinctObjects), Reason=strcat(DistinctObjects, " distinct objects touched in 5 minutes"),
+          RecommendedAction="Look for schema mapping / discovery ahead of exfiltration";
+
+// ----------------------------------------------------------------------------
+// Detection G — High-risk statement anomaly
+// ----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where Statement matches regex @"(?i)\b(DELETE|ALTER|DROP|GRANT|REVOKE|DENY|CREATE\s+USER|ALTER\s+ROLE)\b"
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="High-risk statement anomaly", RiskCategory="HighRiskStatement", AnomalyScore=80,
+          Reason="High-risk DDL/DCL/DML statement executed",
+          RecommendedAction="Confirm change control and authorisation";
+
+// ----------------------------------------------------------------------------
+// Detection H — Break-glass usage
+// ----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where tolower(ServerPrincipalName) == "breakglass_admin"
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Break-glass account used", RiskCategory="BreakGlass", AnomalyScore=100,
+          Reason="Break-glass account activity",
+          RecommendedAction="Confirm approved incident; rotate credentials";
+
+// ----------------------------------------------------------------------------
+// Detection I — VIP record access spike
+// ----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where ObjectName has "SensitiveCustomerData" and Statement has_any ("VIPFlag","SalaryBand","CreditScore","InternalRiskComment")
+| summarize Hits = count(), Statement = any(Statement) by ServerPrincipalName, DatabaseName, ObjectName, bin(TimeGenerated, 10m)
+| where Hits >= 1
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="VIP record access spike", RiskCategory="SensitiveDataAccess", AnomalyScore=toint(60 + Hits),
+          Reason=strcat(Hits, " access(es) to VIP / salary / credit fields in 10 minutes"),
+          RecommendedAction="Confirm the VIP handling justification";
+
+// ----------------------------------------------------------------------------
+// Detection J — Cross-domain access anomaly
+// ----------------------------------------------------------------------------
+let crossDomain = datatable(UserName:string, ForbiddenPattern:string, Label:string)
+[ "payments_analyst","SanctionsScreening","payments analyst -> sanctions",
+  "payments_analyst","FraudSignals","payments analyst -> fraud",
+  "fraud_analyst","EmployeeAccessProfiles","fraud analyst -> HR",
+  "fraud_analyst","SalaryBand","fraud analyst -> salary",
+  "normal_user","AccessRequests","normal user -> admin",
+  "normal_user","SensitiveCustomerData","normal user -> sensitive" ];
+SQLSecurityAuditEvents
+| extend U = tolower(ServerPrincipalName)
+| join kind=inner crossDomain on $left.U == $right.UserName
+| where ObjectName has ForbiddenPattern or Statement has ForbiddenPattern
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, Statement,
+          DetectionName="Cross-domain access anomaly", RiskCategory="SegregationOfDuties", AnomalyScore=72,
+          Reason=strcat("Cross-domain access: ", Label),
+          RecommendedAction="Review segregation-of-duties and data-access justification";

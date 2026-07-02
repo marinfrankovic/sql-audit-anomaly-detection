@@ -1,0 +1,51 @@
+// =============================================================================
+//  alert-rules.kql — the KQL bodies used by the deployed Log Search alerts.
+//  These mirror infra/modules/alerts.bicep so you can test them interactively in
+//  Log Analytics before/after the alerts fire. They query the raw tables directly
+//  (no saved function dependency) so they work immediately after deployment.
+// =============================================================================
+
+// 1) Failed Login Burst (>=5 failures / 5 min per principal) ------------------
+SQLSecurityAuditEvents
+| where ActionName in ("DATABASE AUTHENTICATION FAILED", "LOGIN FAILED")
+| summarize FailedLogins = count() by ServerPrincipalName, bin(TimeGenerated, 5m)
+| where FailedLogins >= 5
+
+// 2) High-Risk SQL Statement --------------------------------------------------
+SQLSecurityAuditEvents
+| where Statement matches regex @"(?i)\b(DROP|ALTER\s+TABLE|TRUNCATE|GRANT|REVOKE|ALTER\s+ROLE|ADD\s+MEMBER|ALTER\s+AUTHORIZATION)\b"
+     or (Statement matches regex @"(?i)\bDELETE\b" and Statement matches regex @"(?i)(Transactions|PaymentInstructions|WireTransfers)")
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, ActionName, Statement
+
+// 3) Sensitive Table Access by Non-Privileged User ---------------------------
+SQLSecurityAuditEvents
+| extend Principal = tolower(ServerPrincipalName)
+| where (ObjectName has_any ("SensitiveCustomerData","FraudSignals","WireTransfers","CustomerRiskScores","SanctionsScreening")
+        or Statement has_any ("SensitiveCustomerData","FraudSignals","WireTransfers","CustomerRiskScores","SanctionsScreening"))
+| where Principal in ("normal_user","reporting_user","app_user")
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, ActionName, Statement
+
+// 4) Privileged After-Hours Sensitive Access ---------------------------------
+SQLSecurityAuditEvents
+| extend Principal = tolower(ServerPrincipalName), HourUtc = datetime_part("Hour", TimeGenerated)
+| where Principal in ("dba_user","privileged_admin","breakglass_admin")
+| where (ObjectName has "SensitiveCustomerData" or Statement has_any ("SalaryBand","CreditScore","InternalRiskComment","NationalIdentifier"))
+| where HourUtc < 6 or HourUtc >= 18
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, Statement
+
+// 5) Break-glass Account Used -------------------------------------------------
+SQLSecurityAuditEvents
+| where tolower(ServerPrincipalName) == "breakglass_admin" or Statement has "breakglass_admin"
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, ActionName, Statement
+
+// 6) Permission Escalation ----------------------------------------------------
+SQLSecurityAuditEvents
+| where ActionName has_any ("ADD MEMBER","DATABASE ROLE MEMBER CHANGE","SERVER ROLE MEMBER CHANGE","PERMISSION CHANGE")
+     or Statement matches regex @"(?i)\b(GRANT|ALTER\s+ROLE|ADD\s+MEMBER|sp_addrolemember)\b"
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, ActionName, Statement
+
+// 7) Query Volume Spike (>=50 batches / 5 min per principal) ------------------
+SQLSecurityAuditEvents
+| where ActionName == "BATCH COMPLETED"
+| summarize StatementCount = count() by ServerPrincipalName, bin(TimeGenerated, 5m)
+| where StatementCount >= 50

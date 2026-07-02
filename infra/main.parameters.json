@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION=swedencentral}"
+    },
+    "resourceGroupName": {
+      "value": "${AZURE_RESOURCE_GROUP=rg-sqlaudit-demo}"
+    },
+    "adminUsername": {
+      "value": "${ADMIN_USERNAME=sqlvmadmin}"
+    },
+    "adminPassword": {
+      "value": "${ADMIN_PASSWORD}"
+    },
+    "sqlAdminLogin": {
+      "value": "${SQL_ADMIN_LOGIN=sqladministrator}"
+    },
+    "sqlAdminPassword": {
+      "value": "${SQL_ADMIN_PASSWORD}"
+    },
+    "alertEmail": {
+      "value": "${ALERT_EMAIL}"
+    },
+    "enableSentinel": {
+      "value": "${ENABLE_SENTINEL=true}"
+    },
+    "enableAzureSql": {
+      "value": "${ENABLE_AZURE_SQL=true}"
+    },
+    "enableUEBA": {
+      "value": "${ENABLE_UEBA=false}"
+    },
+    "enableAzureOpenAI": {
+      "value": "${ENABLE_AZURE_OPENAI=true}"
+    },
+    "openAiModelDeploymentName": {
+      "value": "${OPENAI_MODEL_DEPLOYMENT_NAME=gpt-5-mini}"
+    },
+    "openAiModelName": {
+      "value": "${OPENAI_MODEL_NAME=gpt-5-mini}"
+    },
+    "openAiModelVersion": {
+      "value": "${OPENAI_MODEL_VERSION=2025-08-07}"
+    },
+    "deployAiAnalystFunction": {
+      "value": "${DEPLOY_AI_ANALYST_FUNCTION=true}"
+    },
+    "clientIpAddress": {
+      "value": "${CLIENT_IP_ADDRESS=}"
+    },
+    "vmSize": {
+      "value": "${VM_SIZE=Standard_B4s_v2}"
+    }
+  }
+}

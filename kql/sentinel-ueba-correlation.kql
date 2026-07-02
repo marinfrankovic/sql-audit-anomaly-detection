@@ -1,0 +1,53 @@
+// =============================================================================
+//  sentinel-ueba-correlation.kql — OPTIONAL identity/entity enrichment.
+//  Correlates SQL audit anomalies with Microsoft Sentinel UEBA (BehaviorAnalytics)
+//  and Sentinel incidents/alerts WHERE AVAILABLE.
+//
+//  IMPORTANT: UEBA is NOT the primary SQL-audit anomaly detector. It baselines
+//  supported identity data sources (Entra ID sign-ins, Azure Activity, Security
+//  Events) and adds entity behavioural context. All queries use `isfuzzy=true`
+//  so they DO NOT fail when Sentinel/UEBA tables are absent.
+// =============================================================================
+
+// U1) High-risk SQL anomalies (last 24h) — the entities we want context for ---
+let sqlAnomalies =
+    SQLSecurityAuditEvents
+    | where TimeGenerated > ago(1d)
+    | extend U = tolower(ServerPrincipalName)
+    | where U == "breakglass_admin"
+         or ObjectName has "SensitiveCustomerData"
+         or Statement matches regex @"(?i)\b(DELETE|GRANT|ALTER\s+ROLE|ADD\s+MEMBER)\b"
+    | summarize SqlEvents = count(), LastSeen = max(TimeGenerated), Objects = make_set(ObjectName, 10)
+        by UserName = ServerPrincipalName;
+
+// U2) Left-join with UEBA BehaviorAnalytics (friendly fallback if empty) ------
+let ueba =
+    union isfuzzy=true
+      (BehaviorAnalytics
+        | where TimeGenerated > ago(7d)
+        | summarize InvestigationPriority = max(InvestigationPriority),
+                    UebaActivities = count(),
+                    ActivityTypes = make_set(ActivityType, 10)
+          by UserName = UserPrincipalName);
+let uebaCount = toscalar(union isfuzzy=true (ueba | count | project Count));
+union isfuzzy=true
+  (sqlAnomalies
+    | join kind=leftouter ueba on UserName
+    | extend UebaContext = iff(isnotempty(tostring(InvestigationPriority)),
+                               strcat("UEBA priority ", tostring(InvestigationPriority)),
+                               "No UEBA context available yet")
+    | project UserName, SqlEvents, LastSeen, Objects, InvestigationPriority, UebaActivities, ActivityTypes, UebaContext),
+  (print Note = "UEBA context is optional and depends on Sentinel onboarding and supported data sources."
+    | where isnull(uebaCount) or uebaCount == 0)
+
+// U3) Correlate with Sentinel incidents/alerts (optional) --------------------
+// Returns a friendly note if the SecurityAlert / SecurityIncident tables are empty.
+let alerts =
+    union isfuzzy=true
+      (SecurityAlert
+        | where TimeGenerated > ago(7d)
+        | project AlertTime = TimeGenerated, AlertName, AlertSeverity, Entities);
+union isfuzzy=true
+  (alerts | where isnotempty(AlertName)),
+  (print Note = "No Sentinel alerts/incidents yet — enable analytics rules for SQL/identity to populate this view."
+    | where toscalar(union isfuzzy=true (alerts | count | project Count)) == 0)

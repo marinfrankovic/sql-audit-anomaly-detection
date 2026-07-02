@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Contoso Bank SQL Audit &amp; AI Behavior Analytics PoC — Facilitator Guide</title>
+<style>
+  :root{
+    --blue:#0067b8; --dark:#243a5e; --ink:#1b1b1b; --muted:#5a5a5a;
+    --l1:#107c10; --l2:#8661c5; --l3:#ca5010; --bg:#f3f6fb; --line:#d7dde8;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  body{font-family:"Segoe UI",Arial,sans-serif; color:var(--ink); font-size:11px; line-height:1.5; margin:0;}
+  h1,h2,h3{color:var(--dark); margin:0 0 6px;}
+  h1{font-size:26px;}
+  h2{font-size:16px; border-bottom:2px solid var(--blue); padding-bottom:4px; margin-top:22px;}
+  h3{font-size:13px; margin-top:14px;}
+  p{margin:6px 0;}
+  code{background:#eef2f8; padding:1px 5px; border-radius:3px; font-family:Consolas,monospace; font-size:10.5px;}
+  pre{background:#0f1b2d; color:#e8eef7; padding:10px 12px; border-radius:6px; font-family:Consolas,monospace;
+      font-size:10.5px; line-height:1.45; overflow:hidden; white-space:pre-wrap;}
+  .page{padding:34px 40px; max-width:820px; margin:0 auto;}
+  .cover{background:linear-gradient(135deg,var(--dark),var(--blue)); color:#fff; padding:70px 40px 46px; }
+  .cover h1{color:#fff;}
+  .cover .sub{font-size:14px; opacity:.95; margin-top:8px;}
+  .cover .meta{margin-top:26px; font-size:11px; opacity:.9;}
+  .lead{background:var(--bg); border-left:4px solid var(--blue); padding:12px 16px; border-radius:0 6px 6px 0; margin:12px 0;}
+  .grid{display:flex; gap:12px; margin:12px 0;}
+  .card{flex:1; border:1px solid var(--line); border-radius:8px; padding:12px; background:#fff;}
+  .card h3{margin-top:0;}
+  .tag{display:inline-block; color:#fff; font-weight:600; font-size:10px; padding:2px 8px; border-radius:12px; margin-bottom:6px;}
+  .l1{background:var(--l1);} .l2{background:var(--l2);} .l3{background:var(--l3);}
+  table{width:100%; border-collapse:collapse; margin:10px 0; font-size:10.5px;}
+  th,td{border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top;}
+  th{background:var(--bg); color:var(--dark);}
+  .step{border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin:8px 0; background:#fff;}
+  .step b{color:var(--blue);}
+  .callout{background:#fff7e6; border:1px solid #f0c36d; border-radius:6px; padding:10px 12px; margin:10px 0;}
+  .ok{color:var(--l1); font-weight:600;}
+  ul{margin:6px 0 6px 18px; padding:0;} li{margin:3px 0;}
+  .small{font-size:10px; color:var(--muted);}
+  .pagebreak{page-break-before:always;}
+  @page{size:A4; margin:14mm 0;}
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Contoso Bank SQL Audit &amp; AI Behavior Analytics</h1>
+  <div class="sub">Proof of Concept &mdash; Facilitator &amp; Demo Guide</div>
+  <div class="sub">Who accessed which database records, when, from where &mdash; and was it normal or abnormal?</div>
+  <div class="meta">Azure-native &middot; Deploys with <code style="background:rgba(255,255,255,.15);color:#fff">azd up</code> &middot; 90 days of history preloaded &middot; Demo-ready immediately</div>
+</div>
+
+<div class="page">
+
+<h2>1 &mdash; What you are proving</h2>
+<div class="lead">
+  <b>The message to the customer:</b> &ldquo;We can see who accessed what database records, when, and from where &mdash;
+  and whether the behaviour looks <i>normal or abnormal</i>, even when the user has legitimate elevated access.
+  And an AI layer explains <i>why</i> something is suspicious.&rdquo;
+</div>
+<p>Everything runs inside Azure. There is one pretend bank database (fake customers, accounts, money), one central
+logbook (Azure Log Analytics) that records every database access, and one dashboard (an Azure Workbook) that turns the
+logbook into a story. No real personal data is used anywhere.</p>
+
+<h2>2 &mdash; The three detection layers (the core message)</h2>
+<p>This is the point to land with the customer: detection is <b>not just a fixed set of rules</b>. There are three
+complementary layers, each stronger than the last.</p>
+<div class="grid">
+  <div class="card">
+    <span class="tag l1">LAYER 1</span>
+    <h3>Deterministic rules</h3>
+    <p>Fixed, explainable KQL rules. Example: &ldquo;break-glass account used&rdquo;, &ldquo;DELETE on a wire-transfer
+    table&rdquo;, &ldquo;sensitive data read after hours&rdquo;. Each rule either fires or it doesn&rsquo;t.</p>
+    <p class="small">Great for known-bad patterns and compliance. Predictable, zero false-negatives on the rule itself.</p>
+  </div>
+  <div class="card">
+    <span class="tag l2">LAYER 2</span>
+    <h3>Machine learning</h3>
+    <p>KQL ML (<code>series_decompose_anomalies</code>) <b>learns each user&rsquo;s and system&rsquo;s normal
+    behaviour</b> over 90 days and flags statistical outliers &mdash; e.g. a sudden spike in query volume &mdash;
+    <b>with no fixed threshold</b>.</p>
+    <p class="small">Catches the &ldquo;never-seen-before&rdquo; behaviour that no rule was written for.</p>
+  </div>
+  <div class="card">
+    <span class="tag l3">LAYER 3</span>
+    <h3>AI explanation</h3>
+    <p>Azure OpenAI reads the flagged evidence and <b>explains in plain language why it is suspicious</b> and what to
+    investigate first. It is read-only and grounded strictly in the audit records &mdash; it never invents events.</p>
+    <p class="small">Turns raw signals into an analyst-ready narrative.</p>
+  </div>
+</div>
+<div class="callout"><b>How to say it:</b> &ldquo;Layer 1 catches what we <i>know</i> is bad. Layer 2 uses machine
+learning to catch what we&rsquo;ve <i>never seen</i> by learning normal behaviour. Layer 3 uses AI to <i>explain</i> it
+so an analyst can act in seconds &mdash; not hours.&rdquo;</div>
+
+<h2>3 &mdash; Where each layer lives in the workbook</h2>
+<table>
+  <tr><th>Workbook section</th><th>Layer</th><th>What to point at</th></tr>
+  <tr><td>2. Data Access Timeline &amp; ML Anomaly Baseline</td><td><span class="tag l2">L2 ML</span></td><td>Right-hand chart: the ML baseline with anomalies highlighted.</td></tr>
+  <tr><td>6. Layer 1 &mdash; Deterministic Rule Detections</td><td><span class="tag l1">L1 Rules</span></td><td>Six tiles, one per rule, with a live count.</td></tr>
+  <tr><td>7. Investigation View</td><td>All</td><td>Every event with an <b>AnomalyScore</b>; sort by it to triage.</td></tr>
+  <tr><td>5. Layer 3 &mdash; AI-Assisted Findings</td><td><span class="tag l3">L3 AI</span></td><td>The AI narrative explaining the top anomalies.</td></tr>
+</table>
+
+</div>
+
+<div class="page pagebreak">
+<h2>4 &mdash; One-time setup (before the meeting)</h2>
+<p>From the root of the project folder:</p>
+<pre>azd auth login
+azd up            # builds all Azure resources AND preloads 90 days of history
+
+cd scripts
+./run-poc-scenarios.ps1     # setup + mock data + normal activity + WOW detections + AI</pre>
+<p><code>run-poc-scenarios.ps1</code> is the &ldquo;head waiter&rdquo; &mdash; it runs the other scripts in the right
+order. You do not need to run the individual scripts yourself.</p>
+<div class="callout"><b>Tip:</b> After it finishes, open the workbook and set <b>Time range = 30 days</b>. Every panel
+should already be full. If a panel looks empty, widen the Time range to 30 or 90 days.</div>
+
+<h2>5 &mdash; Running the demo (about 30 minutes)</h2>
+<div class="step"><b>0. Open the dashboard.</b> Azure Portal &rarr; the resource group <code>rg-sqlaudit-demo</code>
+&rarr; open the workbook <b>&ldquo;Contoso Bank SQL Audit &amp; AI Behavior Analytics PoC&rdquo;</b>. Set <b>Time range = 30 days</b>.
+There is only one workbook &mdash; nothing else to pick.</div>
+<div class="step"><b>1. Executive Overview.</b> Lead with the tiles: total audit events, total anomalies, high-risk
+anomalies, break-glass usage. &ldquo;This is 90 days of who-did-what across the bank&rsquo;s databases.&rdquo;</div>
+<div class="step"><b>2. Timeline &amp; ML baseline <span class="tag l2">Layer 2</span>.</b> Point at the right-hand chart.
+&ldquo;Machine learning has <i>learned</i> the normal daily volume. These highlighted points are statistical anomalies
+&mdash; no one wrote a rule for them.&rdquo;</div>
+<div class="step"><b>3. User Behavior Analytics.</b> Show privileged vs standard users and who touches the most
+distinct objects. &ldquo;Even a legitimate DBA is measured against their own normal.&rdquo;</div>
+<div class="step"><b>4. Layer 1 &mdash; Deterministic Rule Detections <span class="tag l1">Layer 1</span>.</b> Walk the six
+tiles: break-glass used, DBA after-hours sensitive access, suspicious DELETE on a financial object, permission
+escalation, out-of-role access, query-volume anomaly. &ldquo;These are the known-bad patterns, each explainable.&rdquo;</div>
+<div class="step"><b>5. Investigation View.</b> Sort by <b>AnomalyScore</b> (descending). &ldquo;One place to triage &mdash;
+the riskiest behaviour floats to the top, with the full evidence: user, time, object, statement, source IP.&rdquo;</div>
+<div class="step"><b>6. Layer 3 &mdash; AI-Assisted Findings <span class="tag l3">Layer 3</span>.</b> Read one AI explanation
+aloud. &ldquo;The AI reads the same evidence and tells the analyst, in plain language, why it&rsquo;s suspicious and what
+to check first &mdash; grounded only in the audit log, never invented.&rdquo;</div>
+<div class="step"><b>7. (Optional) Show it live.</b> In a terminal run
+<code>./generate-wow-detections.ps1 -RunAi</code>, then refresh the workbook to show new activity flowing in.</div>
+
+<h2>6 &mdash; Likely questions</h2>
+<table>
+  <tr><th>Question</th><th>Answer</th></tr>
+  <tr><td>&ldquo;Is this just rules?&rdquo;</td><td>No &mdash; three layers: deterministic rules (L1), machine-learning
+   behavioural baselines (L2), and AI explanation (L3). Rules alone miss novel behaviour; ML catches it.</td></tr>
+  <tr><td>&ldquo;Does it work for privileged users?&rdquo;</td><td>Yes. Every user is compared to <i>their own</i>
+   normal, so a legitimate DBA doing something out-of-character still stands out.</td></tr>
+  <tr><td>&ldquo;Does the AI make things up?&rdquo;</td><td>No. It is read-only and grounded strictly in the audit
+   evidence; it cites user, time, object, statement, and IP.</td></tr>
+  <tr><td>&ldquo;Is this real data?&rdquo;</td><td>All synthetic. The 90-day history is generated so the dashboard is full
+   on day one; live scenarios can be generated on demand.</td></tr>
+</table>
+
+<h2>7 &mdash; After the meeting</h2>
+<pre>azd down --purge      # deletes every Azure resource so billing stops</pre>
+<p class="small">Full detail: <code>docs/demo-walkthrough-30min.md</code>, <code>docs/detection-catalog.md</code>,
+<code>docs/customer-facing-summary.md</code>.</p>
+
+</div>
+</body>
+</html>

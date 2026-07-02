@@ -1,0 +1,76 @@
+// =============================================================================
+//  hunting-queries.kql — threat-hunting queries for SOC / IR analysts.
+//  Requires the UnifiedSqlAudit saved function (see normalization.kql).
+//  These are exploratory (not alerting) queries for proactive investigation.
+// =============================================================================
+
+// H1) User behaviour profile — per-user footprint over the window ------------
+UnifiedSqlAudit
+| summarize
+    Events = count(),
+    DistinctObjects = dcount(ObjectName),
+    SensitiveHits = countif(IsSensitiveObject),
+    AfterHours = countif(IsAfterHours),
+    DistinctClientIps = dcount(ClientIp),
+    FirstSeen = min(EventTime),
+    LastSeen = max(EventTime)
+  by UserName, IsPrivilegedUser
+| order by SensitiveHits desc, Events desc
+
+// H2) Rare object access — objects touched by very few principals ------------
+UnifiedSqlAudit
+| where isnotempty(ObjectName)
+| summarize Users = dcount(UserName), Accesses = count(), UserList = make_set(UserName, 10) by ObjectName
+| where Users <= 2
+| order by Accesses desc
+
+// H3) First-time access to a sensitive object (baseline vs today) ------------
+let lookback = 7d;
+let baseline = UnifiedSqlAudit
+    | where EventTime between (ago(lookback) .. ago(1d)) and IsSensitiveObject
+    | distinct UserName, ObjectName;
+UnifiedSqlAudit
+| where EventTime > ago(1d) and IsSensitiveObject
+| join kind=leftanti baseline on UserName, ObjectName
+| project EventTime, UserName, ObjectName, DatabaseName, Statement
+| order by EventTime desc
+
+// H4) Off-hours privileged activity ------------------------------------------
+UnifiedSqlAudit
+| where IsPrivilegedUser and IsAfterHours
+| project EventTime, UserName, ObjectName, RiskCategory, Statement
+| order by EventTime desc
+
+// H5) Segregation-of-duties breaches (role vs object accessed) ---------------
+let RoleScope = datatable(UserName:string, AllowedPattern:string)
+[
+  "payments_analyst", "payments",
+  "fraud_analyst",    "risk",
+  "reporting_user",   "core"
+];
+UnifiedSqlAudit
+| where isnotempty(ObjectName)
+| join kind=inner RoleScope on UserName
+| where not(ObjectName has AllowedPattern) and not(SchemaName has AllowedPattern)
+| where IsSensitiveObject or RiskCategory == "SensitiveDataAccess"
+| project EventTime, UserName, ObjectName, SchemaName, Statement
+| order by EventTime desc
+
+// H6) Burst detection — statements per user in 1-minute buckets --------------
+UnifiedSqlAudit
+| summarize StatementsPerMin = count() by UserName, bin(EventTime, 1m)
+| where StatementsPerMin >= 20
+| order by StatementsPerMin desc
+
+// H7) Client IP fan-out — one user from many client IPs (possible sharing) ---
+UnifiedSqlAudit
+| where isnotempty(ClientIp)
+| summarize IpCount = dcount(ClientIp), Ips = make_set(ClientIp, 20) by UserName
+| where IpCount >= 2
+| order by IpCount desc
+
+// H8) Permission / schema change audit trail ---------------------------------
+UnifiedSqlAudit
+| where RiskCategory in ("PermissionChange","SchemaChange")
+| project EventTime, UserName, ObjectName, Action, RiskCategory, Statement
+| order by EventTime desc

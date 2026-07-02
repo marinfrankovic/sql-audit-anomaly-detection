@@ -1,0 +1,15 @@
+# Azure Developer CLI
+.azure/
+
+# Environment / secrets
+*.env
+.env
+secrets.json
+
+# PowerShell transcripts / logs
+*.log
+scripts/output/
+
+# OS
+Thumbs.db
+.DS_Store

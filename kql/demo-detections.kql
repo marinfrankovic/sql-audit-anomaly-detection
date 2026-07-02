@@ -1,0 +1,193 @@
+// =============================================================================
+//  demo-detections.kql — WOW-effect detections for the customer demo.
+//  Each detection includes: KQL query, explanation, trigger script, suggested
+//  severity, what to show, and what to say. Queries hit SQLSecurityAuditEvents
+//  directly so they work immediately (swap to UnifiedSqlAudit to include the VM).
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// DETECTION 1 — "DBA accessing VIP customer salary data after business hours"
+//   Explanation : Privileged users are ALLOWED into the database, but reading VIP
+//                 salary/credit/risk fields after hours is abnormal for the role.
+//   Trigger     : ./scripts/generate-wow-detections.ps1  (Scenario C)
+//   Severity    : High (Sev1)
+//   Show        : Workbook > WOW Detections tile "DBA after-hours VIP data access"
+//   Say         : "The DBA is allowed to access the database, but this behaviour is
+//                  unusual — after-hours, targeting VIP salary and risk data."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| extend Principal = tolower(ServerPrincipalName), HourUtc = datetime_part("Hour", TimeGenerated)
+| where Principal in ("dba_user","privileged_admin")
+| where ObjectName has "SensitiveCustomerData"
+     or Statement has_any ("SalaryBand","CreditScore","InternalRiskComment")
+| where HourUtc < 6 or HourUtc >= 18
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 2 — "Normal user suddenly reading privileged tables"
+//   Explanation : A standard user references sensitive objects — either succeeds
+//                 (over-permissioned) or is denied (both are audited).
+//   Trigger     : Scenario D
+//   Severity    : High (Sev1)
+//   Show        : Investigation table filtered to normal_user + red RiskCategory
+//   Say         : "We are not just watching admins. A standard account touching
+//                  privileged tables is flagged instantly."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where tolower(ServerPrincipalName) == "normal_user"
+| where ObjectName has_any ("SensitiveCustomerData","FraudSignals","WireTransfers","CustomerRiskScores")
+     or Statement has_any ("SensitiveCustomerData","FraudSignals","WireTransfers","CustomerRiskScores")
+| project TimeGenerated, ServerPrincipalName, ObjectName, Succeeded, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 3 — "Data exfiltration pattern — unusually large SELECT activity"
+//   Explanation : One principal runs a high volume of SELECTs in a short window.
+//   Trigger     : Scenario H
+//   Severity    : Medium (Sev2)
+//   Show        : Activity timeline spike + this table
+//   Say         : "Volume matters. A sudden burst of reads from one account looks
+//                  like bulk extraction, not day-to-day work."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where ActionName == "BATCH COMPLETED"
+| summarize QueryCount = count(), Rows = sum(tolong(column_ifexists("AffectedRows", 0)))
+    by ServerPrincipalName, bin(TimeGenerated, 5m)
+| where QueryCount >= 50
+| order by QueryCount desc
+
+// -----------------------------------------------------------------------------
+// DETECTION 4 — "Suspicious DELETE against payment or wire transfer table"
+//   Explanation : DELETE statements targeting money-movement tables.
+//   Trigger     : Scenario E (safe — runs inside a rolled-back transaction)
+//   Severity    : High (Sev1)
+//   Show        : WOW Detections tile "Suspicious DELETE on payment data"
+//   Say         : "Destructive statements against payment data are always worth a
+//                  second look — even from an account that technically can."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where Statement matches regex @"(?i)\bDELETE\b"
+| where ObjectName has_any ("Transactions","PaymentInstructions","WireTransfers")
+     or Statement has_any ("Transactions","PaymentInstructions","WireTransfers")
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 5 — "Permission escalation detected"
+//   Explanation : GRANT / ALTER ROLE / ADD MEMBER / role-membership changes.
+//   Trigger     : Scenario F
+//   Severity    : High (Sev1)
+//   Show        : WOW Detections tile "Permission escalation detected"
+//   Say         : "Who is handing out access, to whom, and when — captured live."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where ActionName has_any ("ADD MEMBER","DATABASE ROLE MEMBER CHANGE","SERVER ROLE MEMBER CHANGE","PERMISSION CHANGE")
+     or Statement matches regex @"(?i)\b(GRANT|ALTER\s+ROLE|ADD\s+MEMBER|sp_addrolemember)\b"
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, ActionName, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 6 — "Break-glass account used"
+//   Explanation : Any activity by the emergency account is high-signal.
+//   Trigger     : Scenario G
+//   Severity    : Critical (Sev0)
+//   Show        : WOW Detections tile "Break-glass account used"
+//   Say         : "Break-glass accounts should almost never be used. When they are,
+//                  we know immediately."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where tolower(ServerPrincipalName) == "breakglass_admin" or Statement has "breakglass_admin"
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, ActionName, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 7 — "First-time access to sensitive object"
+//   Explanation : User touches a sensitive table today that they never accessed in
+//                 the baseline lookback window.
+//   Trigger     : Any WOW scenario against a new object
+//   Severity    : Medium (Sev2)
+//   Show        : Investigation table with FirstSeen highlight
+//   Say         : "Behaviour is compared to each user's own history — a first-time
+//                  access to sensitive data stands out."
+// -----------------------------------------------------------------------------
+let lookback = 7d;
+let baseline = SQLSecurityAuditEvents
+    | where TimeGenerated between (ago(lookback) .. ago(1d))
+    | where ObjectName has "SensitiveCustomerData"
+    | distinct ServerPrincipalName, ObjectName;
+SQLSecurityAuditEvents
+| where TimeGenerated > ago(1d) and ObjectName has "SensitiveCustomerData"
+| join kind=leftanti baseline on ServerPrincipalName, ObjectName
+| project TimeGenerated, ServerPrincipalName, ObjectName, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 8 — "Fraud analyst querying unrelated HR or salary data"
+//   Explanation : Segregation-of-duties — fraud_analyst reaching into HR/salary.
+//   Trigger     : Scenario I
+//   Severity    : Medium (Sev2)
+//   Show        : Investigation table filtered to fraud_analyst
+//   Say         : "Right person, wrong data. Their job is fraud, not HR salaries."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where tolower(ServerPrincipalName) == "fraud_analyst"
+| where ObjectName has_any ("EmployeeAccessProfiles","SensitiveCustomerData")
+     or Statement has_any ("hr.","SalaryBand","EmployeeAccessProfiles")
+| project TimeGenerated, ServerPrincipalName, ObjectName, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 9 — "Payment analyst querying fraud/sanctions data"
+//   Explanation : payments_analyst reaching into risk.SanctionsScreening / FraudSignals.
+//   Trigger     : Scenario J
+//   Severity    : Medium (Sev2)
+//   Show        : Investigation table filtered to payments_analyst
+//   Say         : "Out-of-role access to sanctions data is a classic insider-risk
+//                  and compliance signal."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where tolower(ServerPrincipalName) == "payments_analyst"
+| where ObjectName has_any ("SanctionsScreening","FraudSignals")
+     or Statement has_any ("SanctionsScreening","FraudSignals")
+| project TimeGenerated, ServerPrincipalName, ObjectName, Statement
+
+// -----------------------------------------------------------------------------
+// DETECTION 10 — "Impossible operational behavior (SIMULATED)"
+//   Explanation : Same user appears from two different ApplicationName/ClientIp
+//                 values within a short window. NOTE: true geo/impossible-travel is
+//                 out of scope — this is a SIMULATED pattern on app/client identity.
+//   Trigger     : Runs naturally when scenarios are executed from different hosts;
+//                 otherwise force by running scenarios from two shells.
+//   Severity    : Medium (Sev2)
+//   Show        : Investigation table grouped by UserName + ClientIp
+//   Say         : "In production this becomes impossible-travel using real geo data;
+//                  here we simulate it with client identity to show the concept."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where isnotempty(ClientIp) or isnotempty(ApplicationName)
+| summarize DistinctClients = dcount(strcat(ClientIp, "|", ApplicationName)),
+            Clients = make_set(strcat(ClientIp, "|", ApplicationName), 10)
+    by ServerPrincipalName, bin(TimeGenerated, 5m)
+| where DistinctClients >= 2
+
+// -----------------------------------------------------------------------------
+// DETECTION 11 — "VIP customer access spike"
+//   Explanation : Many queries against SensitiveCustomerData referencing VIPFlag.
+//   Trigger     : Scenario C (VIP query) run repeatedly
+//   Severity    : Medium (Sev2)
+//   Show        : Sensitive Data Access section
+//   Say         : "A spike of VIP-flagged customer lookups is a targeted-access signal."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where ObjectName has "SensitiveCustomerData" and Statement has "VIPFlag"
+| summarize VIPAccesses = count() by ServerPrincipalName, bin(TimeGenerated, 10m)
+| where VIPAccesses >= 1
+| order by VIPAccesses desc
+
+// -----------------------------------------------------------------------------
+// DETECTION 12 — "Schema tampering"
+//   Explanation : ALTER/DROP TABLE, CREATE/DROP USER, ALTER AUTHORIZATION, object change.
+//   Trigger     : Run any DDL as a privileged user (e.g. CREATE/DROP a temp object)
+//   Severity    : High (Sev1)
+//   Show        : High-risk statements table
+//   Say         : "Structural changes to the database are rare and controlled —
+//                  every one is captured with who and when."
+// -----------------------------------------------------------------------------
+SQLSecurityAuditEvents
+| where Statement matches regex @"(?i)\b(ALTER\s+TABLE|DROP\s+TABLE|CREATE\s+USER|DROP\s+USER|ALTER\s+AUTHORIZATION|CREATE\s+LOGIN|DROP\s+LOGIN)\b"
+     or ActionName has "SCHEMA OBJECT CHANGE"
+| project TimeGenerated, ServerPrincipalName, DatabaseName, ObjectName, ActionName, Statement

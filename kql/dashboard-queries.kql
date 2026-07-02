@@ -1,0 +1,98 @@
+// =============================================================================
+//  dashboard-queries.kql — reusable dashboard/report queries.
+//  Requires the UnifiedSqlAudit saved function (see normalization.kql).
+//  If you have NOT saved the function yet, prepend the body of normalization.kql
+//  and replace "UnifiedSqlAudit" with that expression.
+// =============================================================================
+
+// 1) Total audited events over time -----------------------------------------
+UnifiedSqlAudit
+| summarize Events = count() by bin(EventTime, 15m)
+| render timechart
+
+// 2) Events by source type ----------------------------------------------------
+UnifiedSqlAudit
+| summarize Events = count() by SourceType
+| render piechart
+
+// 3) Top users by query count -------------------------------------------------
+UnifiedSqlAudit
+| where isnotempty(UserName)
+| summarize Events = count() by UserName
+| top 20 by Events desc
+| render barchart
+
+// 4) Top privileged users -----------------------------------------------------
+UnifiedSqlAudit
+| where IsPrivilegedUser
+| summarize Events = count() by UserName
+| top 10 by Events desc
+| render barchart
+
+// 5) Top accessed tables ------------------------------------------------------
+UnifiedSqlAudit
+| where isnotempty(ObjectName)
+| summarize Accesses = count() by ObjectName
+| top 20 by Accesses desc
+
+// 6) Sensitive table access ---------------------------------------------------
+UnifiedSqlAudit
+| where IsSensitiveObject
+| summarize Accesses = count() by UserName, ObjectName
+| order by Accesses desc
+
+// 7) Failed logins ------------------------------------------------------------
+UnifiedSqlAudit
+| where RiskCategory == "Authentication" and (Action has "FAILED" or Statement has "FAILED")
+| summarize Failures = count() by UserName, bin(EventTime, 5m)
+| order by EventTime desc
+
+// 8) High-risk SQL statements -------------------------------------------------
+UnifiedSqlAudit
+| where RiskCategory in ("PermissionChange","SchemaChange")
+     or (Statement matches regex @"(?i)\bDELETE\b" and ObjectName has_any ("WireTransfers","Transactions","PaymentInstructions"))
+| project EventTime, SourceType, UserName, DatabaseName, ObjectName, Action, Statement
+| order by EventTime desc
+
+// 9) After-hours access -------------------------------------------------------
+UnifiedSqlAudit
+| where IsAfterHours
+| summarize Events = count() by UserName, IsPrivilegedUser
+| order by Events desc
+
+// 10) New source / client pattern (client IPs not seen in the prior baseline) --
+let baseline = UnifiedSqlAudit | where EventTime between (ago(7d) .. ago(1d)) | distinct UserName, ClientIp;
+UnifiedSqlAudit
+| where EventTime > ago(1d) and isnotempty(ClientIp)
+| join kind=leftanti baseline on UserName, ClientIp
+| summarize FirstSeen = min(EventTime), Events = count() by UserName, ClientIp
+| order by FirstSeen desc
+
+// 11) Query activity heatmap (hour x day) -------------------------------------
+UnifiedSqlAudit
+| extend Hour = datetime_part("Hour", EventTime), Day = dayofweek(EventTime)
+| summarize Events = count() by Hour, DayOfWeek = toint(Day / 1d)
+| order by DayOfWeek asc, Hour asc
+
+// 12) Privileged activity timeline --------------------------------------------
+UnifiedSqlAudit
+| where IsPrivilegedUser
+| summarize Events = count() by bin(EventTime, 15m), UserName
+| render timechart
+
+// 13) Investigation table (who / what / when / from where / against what / normal?) --
+UnifiedSqlAudit
+| project
+    When = EventTime,
+    Who = UserName,
+    Privileged = IsPrivilegedUser,
+    FromWhere = ClientIp,
+    Source = SourceType,
+    Database = DatabaseName,
+    Against = ObjectName,
+    What = Action,
+    Risk = RiskCategory,
+    Normal = iff(RiskCategory == "Normal" and not(IsAfterHours), "Normal", "Review"),
+    Statement
+| order by When desc
+| take 500

@@ -1,0 +1,17 @@
+Explain the following SQL audit anomaly for a security analyst.
+
+Use ONLY the evidence below. Do not invent events. Cite the fields you rely on.
+
+Evidence (JSON):
+{evidence}
+
+Produce:
+1. Plain-language explanation of what happened.
+2. Why it triggered (which behavioural signals: privileged, sensitive object, after-hours,
+   out-of-role, first-time access, high-risk statement, volume).
+3. What evidence supports it (cite UserName, EventTime, DatabaseName, ObjectName, Statement,
+   ClientIp, RiskCategory, DetectionName).
+4. A likely benign explanation (if one is plausible from the evidence).
+5. A recommended investigation step (read-only; do not propose changes).
+
+Keep it under 200 words.

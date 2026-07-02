@@ -1,0 +1,137 @@
+// =============================================================================
+//  normalization.kql — UnifiedSqlAudit normalization layer
+//  Combines Azure SQL (SQLSecurityAuditEvents) and SQL Server VM (Event table /
+//  Windows Application log) into a single, normalized schema for dashboards,
+//  hunting and detections.
+//
+//  DEPLOY AS A SAVED FUNCTION (recommended):
+//    In Log Analytics > Logs > paste the body below (from 'let priv...' to the end),
+//    then "Save as function" with the name  UnifiedSqlAudit  (category: SQLAuditPoC).
+//    After saving you can simply call:  UnifiedSqlAudit | where ...
+//
+//  Normalized fields:
+//    SourceType, EventTime, ServerName, DatabaseName, UserName, ClientIp,
+//    ApplicationName, Action, ObjectName, SchemaName, Statement, RiskCategory,
+//    DetectionName, IsPrivilegedUser, IsSensitiveObject, IsAfterHours,
+//    IsNewObjectForUser, IsOutsideExpectedRole, IsHighRiskStatement,
+//    AnomalyScore, BehaviorExplanation, RawRecord
+// =============================================================================
+
+let PrivilegedUsers = dynamic(["dba_user","privileged_admin","breakglass_admin"]);
+let SensitiveObjects = dynamic([
+    "SensitiveCustomerData","FraudSignals","WireTransfers","SanctionsScreening",
+    "CustomerRiskScores","PaymentInstructions","AccessRequests","EmployeeAccessProfiles"]);
+// Expected schema per role (used for out-of-role detection).
+let RoleScope = dynamic({
+    "payments_analyst":"payments", "fraud_analyst":"risk", "reporting_user":"core",
+    "normal_user":"core", "app_user":"payments" });
+let Lookback = 7d;
+// --- Azure SQL branch -------------------------------------------------------
+let AzureSqlAudit =
+    SQLSecurityAuditEvents
+    | extend
+        SourceType      = "AzureSQL",
+        EventTime       = TimeGenerated,
+        ServerName      = tostring(column_ifexists("ServerName", LogicalServerName_s)),
+        DatabaseName    = tostring(DatabaseName),
+        UserName        = tostring(ServerPrincipalName),
+        ClientIp        = tostring(ClientIp),
+        ApplicationName = tostring(ApplicationName),
+        Action          = tostring(ActionName),
+        ObjectName      = tostring(ObjectName),
+        SchemaName      = tostring(SchemaName),
+        Statement       = tostring(Statement),
+        RawRecord       = tostring(Statement);
+// --- SQL Server on VM branch (parse RenderedDescription) --------------------
+let VmSqlAudit =
+    Event
+    | where Source has "MSSQL" or RenderedDescription has "audit"
+    | where RenderedDescription has_any ("server_principal_name", "action_id", "statement")
+    | extend
+        SourceType      = "SqlServerVM",
+        EventTime       = TimeGenerated,
+        ServerName      = tostring(Computer),
+        DatabaseName    = extract(@'database_name:([\w\-]+)', 1, RenderedDescription),
+        UserName        = extract(@'server_principal_name:([\w@.\-\\]+)', 1, RenderedDescription),
+        ClientIp        = extract(@'client_ip:([\d\.]+)', 1, RenderedDescription),
+        ApplicationName = extract(@'application_name:([\w\s\.\-]+)', 1, RenderedDescription),
+        Action          = extract(@'action_id:(\w+)', 1, RenderedDescription),
+        ObjectName      = extract(@'object_name:([\w\.\-]+)', 1, RenderedDescription),
+        SchemaName      = extract(@'schema_name:([\w]+)', 1, RenderedDescription),
+        Statement       = extract(@'statement:(.*?)(?:\s+additional_information|\Z)', 1, RenderedDescription),
+        RawRecord       = RenderedDescription;
+// --- Preloaded 90-day synthetic history (custom table via Logs ingestion) ---
+// SqlAuditPoC_CL is seeded at deploy time by scripts/generate-ai-baseline-data.ps1
+// so the demo has behavioural baselines, trends and anomalies with NO waiting.
+let HistoryAudit =
+    union isfuzzy=true (SqlAuditPoC_CL)
+    | extend
+        SourceType      = column_ifexists("SourceType_s", "History"),
+        EventTime       = TimeGenerated,
+        ServerName      = tostring(column_ifexists("ServerName_s", "")),
+        DatabaseName    = tostring(column_ifexists("DatabaseName_s", "")),
+        UserName        = tostring(column_ifexists("UserName_s", "")),
+        ClientIp        = tostring(column_ifexists("ClientIp_s", "")),
+        ApplicationName = tostring(column_ifexists("ApplicationName_s", "")),
+        Action          = tostring(column_ifexists("Action_s", "")),
+        ObjectName      = tostring(column_ifexists("ObjectName_s", "")),
+        SchemaName      = tostring(column_ifexists("SchemaName_s", "")),
+        Statement       = tostring(column_ifexists("Statement_s", "")),
+        RawRecord       = tostring(column_ifexists("Statement_s", ""));
+// --- Union + enrichment -----------------------------------------------------
+let Unified =
+    union AzureSqlAudit, VmSqlAudit, HistoryAudit
+    | extend UserNameLower = tolower(UserName)
+    | extend
+        IsPrivilegedUser  = UserNameLower in (PrivilegedUsers),
+        IsSensitiveObject = (ObjectName has_any (SensitiveObjects)) or (Statement has_any (SensitiveObjects)),
+        IsAfterHours      = (datetime_part("Hour", EventTime) < 6 or datetime_part("Hour", EventTime) >= 18),
+        IsHighRiskStatement = Statement matches regex @"(?i)\b(DROP|DELETE|TRUNCATE|GRANT|REVOKE|DENY|ALTER\s+ROLE|ADD\s+MEMBER|ALTER\s+TABLE|CREATE\s+USER|DROP\s+USER|ALTER\s+AUTHORIZATION)\b"
+    | extend ExpectedSchema = tostring(RoleScope[UserNameLower])
+    | extend IsOutsideExpectedRole = isnotempty(ExpectedSchema) and IsSensitiveObject
+        and not(ObjectName has ExpectedSchema) and not(Statement has ExpectedSchema);
+// First-time (for the user) access to a sensitive object vs the baseline window.
+let Baseline =
+    Unified
+    | where EventTime between (ago(Lookback) .. ago(1d)) and IsSensitiveObject and isnotempty(ObjectName)
+    | distinct UserName, ObjectName;
+Unified
+| extend joinKey = strcat(UserName, "|", ObjectName)
+| join kind=leftouter (Baseline | extend joinKey = strcat(UserName, "|", ObjectName) | distinct joinKey, seen=1) on joinKey
+| extend IsNewObjectForUser = IsSensitiveObject and isnotempty(ObjectName) and isempty(tostring(seen))
+| extend RiskCategory = case(
+    Statement matches regex @"(?i)\b(GRANT|REVOKE|ALTER\s+ROLE|ADD\s+MEMBER|sp_addrolemember)\b"
+        or Action has_any ("PERMISSION CHANGE","ROLE MEMBER CHANGE"), "PermissionChange",
+    UserNameLower == "breakglass_admin", "BreakGlass",
+    Statement matches regex @"(?i)\b(DROP|CREATE|ALTER\s+TABLE|ALTER\s+AUTHORIZATION)\b"
+        or Action has "SCHEMA OBJECT CHANGE", "SchemaChange",
+    IsSensitiveObject, "SensitiveDataAccess",
+    Statement matches regex @"(?i)\b(DELETE|UPDATE|INSERT)\b", "DataModification",
+    Action has "LOGIN" or Statement has "LOGIN", "Authentication",
+    "Normal")
+| extend DetectionName = case(
+    UserNameLower == "breakglass_admin", "Break-glass account used",
+    IsPrivilegedUser and IsSensitiveObject and IsAfterHours, "DBA after-hours sensitive access",
+    UserNameLower == "normal_user" and IsSensitiveObject, "Normal user accessing sensitive table",
+    Statement has "DELETE" and (ObjectName has_any ("WireTransfers","Transactions","PaymentInstructions")), "Suspicious DELETE on financial object",
+    RiskCategory == "PermissionChange", "Permission escalation",
+    IsOutsideExpectedRole, "Out-of-role data access",
+    IsNewObjectForUser, "First-time sensitive object access",
+    IsHighRiskStatement, "High-risk statement",
+    "None")
+| extend AnomalyScore = toint(20 * toint(IsPrivilegedUser) + 30 * toint(IsSensitiveObject)
+        + 20 * toint(IsAfterHours) + 40 * toint(IsHighRiskStatement)
+        + 30 * toint(IsOutsideExpectedRole) + 25 * toint(IsNewObjectForUser)
+        + 50 * toint(UserNameLower == "breakglass_admin"))
+| extend BehaviorExplanation = strcat(
+        iff(IsPrivilegedUser, "privileged user; ", ""),
+        iff(IsSensitiveObject, "sensitive object; ", ""),
+        iff(IsAfterHours, "after-hours; ", ""),
+        iff(IsOutsideExpectedRole, "out-of-role for user; ", ""),
+        iff(IsNewObjectForUser, "first-time access; ", ""),
+        iff(IsHighRiskStatement, "high-risk statement; ", ""))
+| project
+    SourceType, EventTime, ServerName, DatabaseName, UserName, ClientIp, ApplicationName,
+    Action, ObjectName, SchemaName, Statement, RiskCategory, DetectionName,
+    IsPrivilegedUser, IsSensitiveObject, IsAfterHours, IsNewObjectForUser,
+    IsOutsideExpectedRole, IsHighRiskStatement, AnomalyScore, BehaviorExplanation, RawRecord

@@ -1,0 +1,15 @@
+Produce a short investigation summary for a single case for Contoso Bank's SOC.
+
+Use ONLY the evidence below. Do not invent events. Cite fields.
+
+Evidence (JSON):
+{evidence}
+
+Produce:
+1. What is the suspected issue (one line).
+2. Timeline of the relevant events (EventTime + UserName + ObjectName + Action).
+3. Why this matters (business risk).
+4. Evidence cited (fields).
+5. Recommended next steps for a human analyst (read-only).
+
+Keep it under 250 words. Do not propose any SQL changes or Azure resource changes.

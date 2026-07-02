@@ -1,0 +1,63 @@
+// =============================================================================
+//  ai-analyst-inputs.kql — evidence feeds for the read-only AI Analyst (Layer 3).
+//  These queries return ONLY the grounding fields the AI is allowed to cite:
+//    UserName, EventTime, DatabaseName, ObjectName, Statement, ClientIp,
+//    RiskCategory, DetectionName (+ AnomalyScore, Reason).
+//  run-ai-analysis.ps1 executes these and passes the JSON to the AI API.
+//  The AI must NOT invent events and must only use these rows as evidence.
+// =============================================================================
+
+// AI-1) Top anomalies (evidence for summarize_daily_sql_risk / explain_anomaly)
+let priv = dynamic(["dba_user","privileged_admin","breakglass_admin"]);
+let sensitive = dynamic(["SensitiveCustomerData","FraudSignals","WireTransfers","SanctionsScreening","CustomerRiskScores","EmployeeAccessProfiles","AccessRequests"]);
+SQLSecurityAuditEvents
+| where TimeGenerated > ago(1d)
+| extend U = tolower(ServerPrincipalName), H = datetime_part("Hour", TimeGenerated)
+| extend IsPriv = U in (priv),
+         IsSensitive = ObjectName has_any (sensitive) or Statement has_any (sensitive),
+         AfterHours = H < 6 or H >= 18,
+         HighRisk = Statement matches regex @"(?i)\b(DELETE|DROP|GRANT|REVOKE|ALTER\s+ROLE|ADD\s+MEMBER|ALTER\s+TABLE)\b"
+| extend DetectionName = case(
+    U == "breakglass_admin","Break-glass account used",
+    IsPriv and IsSensitive and AfterHours,"DBA after-hours sensitive access",
+    U == "normal_user" and IsSensitive,"Normal user accessing sensitive table",
+    Statement has "DELETE" and ObjectName has_any ("WireTransfers","Transactions","PaymentInstructions"),"Suspicious DELETE on financial object",
+    HighRisk and Statement matches regex @"(?i)\b(GRANT|ALTER\s+ROLE|ADD\s+MEMBER)\b","Permission escalation",
+    HighRisk,"High-risk statement",
+    IsSensitive,"Sensitive object access",
+    "None"),
+  RiskCategory = case(
+    Statement matches regex @"(?i)\b(GRANT|REVOKE|ALTER\s+ROLE|ADD\s+MEMBER)\b","PermissionChange",
+    U=="breakglass_admin","BreakGlass", IsSensitive,"SensitiveDataAccess",
+    Statement matches regex @"(?i)\b(DELETE|UPDATE|INSERT)\b","DataModification","Normal"),
+  AnomalyScore = toint(20*toint(IsPriv)+30*toint(IsSensitive)+20*toint(AfterHours)+40*toint(HighRisk)+50*toint(U=="breakglass_admin"))
+| where DetectionName != "None"
+| project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, ClientIp,
+          Statement=substring(Statement, 0, 400), RiskCategory, DetectionName, AnomalyScore
+| order by AnomalyScore desc, EventTime desc
+| take 25
+
+// AI-2) Privileged activity summary (evidence for daily summary) -------------
+// SQLSecurityAuditEvents
+// | where TimeGenerated > ago(1d) and tolower(ServerPrincipalName) in ("dba_user","privileged_admin","breakglass_admin")
+// | summarize Events=count(), Objects=make_set(ObjectName,15), FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated)
+//     by UserName=ServerPrincipalName
+// | order by Events desc
+
+// AI-3) Sensitive object access (evidence for daily summary) -----------------
+// SQLSecurityAuditEvents
+// | where TimeGenerated > ago(1d) and (ObjectName has "SensitiveCustomerData" or Statement has_any ("SalaryBand","CreditScore","InternalRiskComment","VIPFlag"))
+// | project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, ClientIp, Statement=substring(Statement,0,400)
+// | order by EventTime desc
+// | take 50
+
+// AI-4) Single anomaly by user (evidence for explain_anomaly) ----------------
+// Provide UserName as a parameter when calling from run-ai-analysis.ps1.
+// SQLSecurityAuditEvents
+// | where TimeGenerated > ago(1d) and ServerPrincipalName == "<UserName>"
+// | project EventTime=TimeGenerated, UserName=ServerPrincipalName, DatabaseName, ObjectName, ClientIp, Statement=substring(Statement,0,400)
+// | order by EventTime desc
+// | take 20
+
+// AI-5) Peer comparison (evidence for compare_users) -------------------------
+// let roleOf = SQLSecurityAuditEvents | ...  // supply two users or a peer group in the script.

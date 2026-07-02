@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Contoso Bank SQL Audit &amp; AI Behaviour Analytics — Frequently Asked Questions</title>
+<style>
+  :root{ --blue:#0067b8; --dark:#243a5e; --ink:#20242b; --muted:#5a5a5a; --bg:#f2f6fc; --line:#dbe2ec; --accent:#8661c5; }
+  *{box-sizing:border-box;}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  body{font-family:"Segoe UI",Arial,sans-serif; color:var(--ink); font-size:10.5px; line-height:1.45; margin:0;}
+  .cover{background:linear-gradient(135deg,var(--dark),var(--blue)); color:#fff; padding:54px 40px 30px;}
+  .cover h1{font-size:24px; margin:0;}
+  .cover .sub{font-size:12px; opacity:.95; margin-top:6px;}
+  .page{padding:26px 40px;}
+  h2{font-size:14px; color:#fff; background:var(--accent); padding:6px 12px; border-radius:5px; margin:20px 0 10px;}
+  h2.blue{background:var(--blue);}
+  h2.dark{background:var(--dark);}
+  .qa{margin:0 0 11px; padding:0 0 9px; border-bottom:1px solid var(--line);}
+  .q{font-weight:700; color:var(--dark); margin:0 0 3px;}
+  .q::before{content:"Q "; color:var(--blue); font-weight:800;}
+  .a{margin:0;}
+  .a::before{content:"A "; color:var(--accent); font-weight:800;}
+  code{background:#eef2f8; padding:1px 4px; border-radius:3px; font-family:Consolas,monospace; font-size:9.8px;}
+  ul{margin:4px 0 4px 16px; padding:0;} li{margin:2px 0;}
+  .note{background:var(--bg); border-left:4px solid var(--blue); padding:8px 12px; border-radius:0 6px 6px 0; margin:8px 0; font-size:9.8px;}
+  .pagebreak{page-break-before:always;}
+  .foot{margin-top:14px; padding-top:8px; border-top:1px solid var(--line); font-size:9px; color:var(--muted);}
+  @page{size:A4; margin:12mm 0;}
+</style>
+</head>
+<body>
+<div class="cover">
+  <h1>Frequently Asked Questions</h1>
+  <div class="sub">AI-Augmented SQL Audit &amp; Behaviour Analytics &mdash; Contoso Bank Proof of Concept</div>
+  <div class="sub">Architecture &middot; Detection &middot; The three layers &middot; Cost &middot; Security &middot; On-premises &amp; Azure Arc</div>
+</div>
+<div class="page">
+
+  <h2 class="blue">Architecture</h2>
+
+  <div class="qa"><p class="q">What exactly is deployed?</p>
+  <p class="a">A small, self-contained environment in <b>your</b> Azure subscription: a central log store (<b>Azure Log Analytics</b>), a demo SQL Server (on an Azure VM for the PoC), auditing configured to stream every data access into the log store, a <b>Key Vault</b> for secrets, an <b>Action Group</b> + alert rules for email notifications, and one <b>Azure Workbook</b> dashboard. Optional add-ons: Microsoft Sentinel/UEBA and an Azure OpenAI &ldquo;AI Analyst&rdquo;.</p></div>
+
+  <div class="qa"><p class="q">How does data flow through the system?</p>
+  <p class="a">Database access &rarr; <b>SQL Audit</b> writes an audit record &rarr; the <b>Azure Monitor Agent</b> forwards it (per a Data Collection Rule) into <b>Log Analytics</b> &rarr; the three detection layers analyse it &rarr; results appear on the <b>dashboard</b> and are pushed as <b>email alerts</b>. Nothing is installed inside the database engine itself.</p></div>
+
+  <div class="qa"><p class="q">Does it touch or slow down our production databases?</p>
+  <p class="a">No. It reads the <b>audit trail</b>, not the data. SQL Server auditing has minimal overhead, and all analysis happens in Log Analytics &mdash; away from the database. In the PoC everything is synthetic; in production it would attach to your existing audit stream.</p></div>
+
+  <div class="qa"><p class="q">Is this one-off, or continuous?</p>
+  <p class="a">Continuous. Audit data streams in real time; the ML baseline is recalculated on a rolling window; alerts evaluate every few minutes. The 90 days of history in the PoC is preloaded so the dashboard is populated on day one.</p></div>
+
+  <h2 class="blue">Detection &amp; the three layers</h2>
+
+  <div class="qa"><p class="q">Why three layers instead of just rules?</p>
+  <p class="a">Rules only catch what you already thought to write down. Attackers and insiders do <i>new</i> things. So we combine: <b>Layer 1 rules</b> for known-bad patterns, <b>Layer 2 machine learning</b> for never-seen-before behaviour, and <b>Layer 3 AI</b> to explain findings in plain language.</p></div>
+
+  <div class="qa"><p class="q">What is Layer 1 (deterministic rules)?</p>
+  <p class="a">Fixed, explainable KQL rules: break-glass account use, DELETE/DROP/GRANT on financial objects, permission escalation, after-hours sensitive-data access, failed-login bursts, schema tampering. Each fires predictably and is fully auditable.</p></div>
+
+  <div class="qa"><p class="q">What is Layer 2 (machine learning)?</p>
+  <p class="a">KQL machine-learning functions (<code>series_decompose_anomalies</code>) learn each user&rsquo;s and system&rsquo;s <b>normal</b> pattern over 90 days and flag statistical outliers &mdash; e.g. a sudden spike in query volume &mdash; with <b>no fixed threshold</b>. This catches behaviour no rule targets, including from privileged users.</p></div>
+
+  <div class="qa"><p class="q">What is Layer 3 (AI)?</p>
+  <p class="a">An Azure OpenAI model reads the flagged evidence and writes a short, plain-language explanation of <b>why</b> it is suspicious and <b>what to investigate first</b>. It is <b>read-only</b>, grounded strictly in the audit records, and never invents events or executes anything.</p></div>
+
+  <div class="qa"><p class="q">Does it work for privileged / admin users?</p>
+  <p class="a">Yes &mdash; this is a core strength. Every user is compared to <i>their own</i> baseline, so a legitimate DBA doing something out-of-character (wrong time, wrong data, unusual volume) still stands out even though their access is technically allowed.</p></div>
+
+  <div class="qa"><p class="q">How are false positives handled?</p>
+  <p class="a">Layer 1 rules are precise by design. Layer 2 uses a tunable sensitivity so you can trade off noise vs. coverage. Every alert carries full evidence and an AI explanation, so triage is fast and analysts can confirm or dismiss quickly. Baselines improve as more history accrues.</p></div>
+
+</div>
+
+<div class="page pagebreak">
+
+  <h2 class="dark">Cost</h2>
+
+  <div class="qa"><p class="q">What drives the cost?</p>
+  <p class="a">Primarily <b>Log Analytics data ingestion &amp; retention</b> (priced per GB). Secondary: the demo VM (not needed in production if you use real servers), optional <b>Azure OpenAI</b> (per token &mdash; tiny, since only anomalies are analysed), and optional <b>Microsoft Sentinel</b> (per GB) if you enable it.</p></div>
+
+  <div class="qa"><p class="q">Roughly how much for the PoC?</p>
+  <p class="a">The PoC is intentionally small and cost-conscious &mdash; a single low-tier VM, modest log volume, and a small AI model (<code>gpt-4o-mini</code>). It is designed to be torn down with one command (<code>azd down --purge</code>) so it only costs while it runs.</p></div>
+
+  <div class="qa"><p class="q">How do we control cost in production?</p>
+  <p class="a"><ul>
+    <li>Audit only the objects that matter (sensitive tables), not everything.</li>
+    <li>Use Log Analytics <b>commitment tiers</b> and <b>data retention/archival</b> policies.</li>
+    <li>Send only audit metadata &mdash; never the underlying data &mdash; keeping volumes low.</li>
+    <li>Run the AI layer only on anomalies, not on every event.</li>
+  </ul></p></div>
+
+  <h2 class="blue">Security &amp; data protection</h2>
+
+  <div class="qa"><p class="q">Where does the data live?</p>
+  <p class="a">Entirely inside <b>your</b> Azure tenant and chosen region. No data is sent to third parties. The AI layer uses <b>your</b> Azure OpenAI resource (your tenant), not a public service.</p></div>
+
+  <div class="qa"><p class="q">Is the AI a data-exfiltration risk?</p>
+  <p class="a">No. The AI Analyst is <b>read-only</b> and receives only the specific audit evidence for a flagged anomaly. It cannot query databases, change anything, or send data outside your tenant, and it is instructed to never invent events.</p></div>
+
+  <div class="qa"><p class="q">How are secrets and identities handled?</p>
+  <p class="a">Secrets are stored in <b>Azure Key Vault</b>; services authenticate with <b>managed identities</b> and least-privilege RBAC where possible. The audit data itself contains access metadata (who/what/when), not card numbers or balances.</p></div>
+
+  <div class="qa"><p class="q">Is any real customer data used?</p>
+  <p class="a">No. The PoC uses 100% synthetic data. No real personal or financial information is present anywhere.</p></div>
+
+  <div class="note"><b>PoC vs production:</b> the PoC favours simplicity (public network access on the demo VM, secrets in Key Vault but no Private Endpoints). A production rollout would add Private Link, network isolation, and hardened RBAC &mdash; documented in the post-deployment guide.</div>
+
+  <h2 class="dark">On-premises SQL Server &amp; Azure Arc</h2>
+
+  <div class="qa"><p class="q">Does this work with our on-premises SQL Servers?</p>
+  <p class="a">Yes. The same three-layer analytics work on any SQL Server whose audit stream reaches Log Analytics. The bridge for on-premises (or other-cloud) servers is <b>Azure Arc</b>.</p></div>
+
+  <div class="qa"><p class="q">How does Azure Arc collect the data?</p>
+  <p class="a"><ul>
+    <li>Install the <b>Azure Arc agent</b> (<code>azcmagent</code>) on the on-prem server &mdash; it now appears in Azure as an <b>Arc-enabled server</b>.</li>
+    <li>Deploy the <b>Azure Monitor Agent</b> extension to it and attach a <b>Data Collection Rule</b> that gathers the <b>SQL Server Audit</b> events (from the Windows event log / audit files).</li>
+    <li>Those audit records flow to the <b>same Log Analytics workspace</b> &mdash; and the same rules, ML and AI apply, side-by-side with cloud data.</li>
+  </ul></p></div>
+
+  <div class="qa"><p class="q">What actually leaves our premises?</p>
+  <p class="a">Only the <b>audit log records</b> (who accessed what, when, from where) &mdash; not the database contents. All agent traffic is <b>outbound</b> HTTPS (443) to Azure; Azure never connects back into your network. It can be routed over <b>Azure Private Link / ExpressRoute</b> to keep the data off the public internet (a few control-plane endpoints, such as Microsoft Entra ID and Azure Resource Manager, may still use public endpoints).</p></div>
+
+  <div class="qa"><p class="q">What is &ldquo;Arc-enabled SQL Server&rdquo; and do we need it?</p>
+  <p class="a">Arc-enabled SQL Server extends Arc to the SQL <i>instance</i>, unlocking inventory, best-practices assessment, and <b>Microsoft Defender for SQL</b>. It is complementary: you can collect audit data with just the Arc agent + Azure Monitor Agent, and optionally add Arc-enabled SQL Server for deeper posture management.</p></div>
+
+  <div class="qa"><p class="q">What are the prerequisites and overhead on-prem?</p>
+  <p class="a">A lightweight agent per server, outbound 443 (or Private Link), and permission to onboard. The agent footprint is small; SQL auditing overhead is minimal. No inbound firewall changes and no data-plane access are required.</p></div>
+
+  <div class="qa"><p class="q">Can we mix cloud and on-prem in one view?</p>
+  <p class="a">Yes. Azure SQL, SQL on Azure VMs, and Arc-connected on-prem servers all feed the same workspace, so the dashboard, alerts, ML baselines and AI explanations span your entire estate in one place.</p></div>
+
+  <div class="foot">Proof of Concept &middot; Microsoft &amp; Contoso Bank &middot; All PoC data is synthetic. Figures and behaviours are illustrative; production sizing, cost and hardening are covered in the deployment and post-deployment guides.</div>
+
+  <h2 class="blue">References (Microsoft Learn)</h2>
+  <p class="small" style="line-height:1.6;">
+    Arc agent &amp; network requirements: <code>learn.microsoft.com/azure/azure-arc/servers/network-requirements</code><br>
+    Arc Private Link: <code>learn.microsoft.com/azure/azure-arc/servers/private-link-security</code><br>
+    Collect Windows events with Azure Monitor Agent (DCR): <code>learn.microsoft.com/azure/azure-monitor/vm/data-collection-windows-events</code><br>
+    KQL machine-learning anomaly detection (<code>series_decompose_anomalies</code>): <code>learn.microsoft.com/azure/azure-monitor/logs/kql-machine-learning-azure-monitor</code><br>
+    SQL Server Audit: <code>learn.microsoft.com/sql/relational-databases/security/auditing/sql-server-audit-database-engine</code><br>
+    Microsoft Defender for SQL (Arc-enabled): <code>learn.microsoft.com/azure/defender-for-cloud/defender-for-sql-introduction</code><br>
+    Log Analytics cost / commitment tiers &amp; retention: <code>learn.microsoft.com/azure/azure-monitor/logs/cost-logs</code>
+  </p>
+</div>
+</body>
+</html>

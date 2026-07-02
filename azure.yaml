@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: sqlaudit-poc
+metadata:
+  template: sqlaudit-poc@2.0.0
+# Infrastructure + data + KQL, plus an optional read-only AI Analyst Function App.
+# The AI Analyst function service is disabled by default here because SFI-governed
+# subscriptions block the Consumption function's storage file share. To deploy the
+# function on a standard subscription, uncomment the services block below and set
+# DEPLOY_AI_ANALYST_FUNCTION=true, then run `azd deploy aianalyst`.
+# services:
+#   aianalyst:
+#     project: ./ai/functionapp
+#     language: python
+#     host: function
+hooks:
+  postprovision:
+    windows:
+      shell: pwsh
+      continueOnError: true
+      run: ./scripts/postprovision.ps1
+    posix:
+      shell: sh
+      continueOnError: true
+      run: echo "Provisioning complete. See docs/post-deployment.md for next steps."
