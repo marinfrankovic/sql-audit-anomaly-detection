@@ -129,3 +129,7 @@ azd down --purge                 # delete everything
   executes SQL or changes Azure.
 - **Impossible-travel is simulated** on client/app identity (real geo-IP is out of scope).
 - Synthetic data only — no real personal data anywhere.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
